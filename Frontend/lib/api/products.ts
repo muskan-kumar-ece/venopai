@@ -32,5 +32,6 @@ export async function fetchProductBySlug(slug: string) {
   if (!product) {
     throw new Error("Product not found");
   }
-  return product;
+  const { data } = await apiClient.get<Product>(`/api/v1/products/${product.id}/`);
+  return data;
 }

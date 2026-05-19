@@ -3,7 +3,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from django.db import transaction
-from django.db.models import Count, DecimalField, F, Q, Sum, Value
+from django.db.models import Count, DecimalField, F, IntegerField, Max, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -13,16 +13,21 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.throttles import AdminRateThrottle
-from orders.notifications import send_order_email
-from orders.models import Order, OrderEvent, ShippingEvent
+from orders.models import InventoryReservation, Order, OrderEvent, ShippingEvent
+from orders.tasks import send_order_email_task
+from payments.models import Payment
+from products.models import Product
 from users.models import Referral
 
 from .serializers import (
     AdminDeliverOrderSerializer,
+    AdminFailedPaymentSerializer,
+    AdminInventoryItemSerializer,
     AdminOrderDetailSerializer,
     AdminOrderListSerializer,
     AdminShipOrderSerializer,
     AdminOrderStatusUpdateSerializer,
+    AdminReservationSerializer,
     AnalyticsSummarySerializer,
 )
 
@@ -30,6 +35,24 @@ TRACKING_ID_PREFIX = "TRK"
 
 
 class AdminOrderPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 200
+
+
+class AdminInventoryPagination(PageNumberPagination):
+    page_size = 100
+    page_size_query_param = "page_size"
+    max_page_size = 500
+
+
+class AdminReservationPagination(PageNumberPagination):
+    page_size = 100
+    page_size_query_param = "page_size"
+    max_page_size = 500
+
+
+class AdminFailedPaymentPagination(PageNumberPagination):
     page_size = 50
     page_size_query_param = "page_size"
     max_page_size = 200
@@ -122,6 +145,126 @@ class AnalyticsSummaryView(APIView):
         return Response(serializer.data)
 
 
+class AdminOperationsSummaryView(APIView):
+    permission_classes = [IsAdminUser]
+    throttle_classes = [AdminRateThrottle]
+
+    def get(self, request):
+        now = timezone.now()
+        pending_statuses = [
+            Order.PaymentStatus.PENDING,
+            Order.PaymentStatus.PENDING_PAYMENT,
+            Order.PaymentStatus.PAYMENT_PROCESSING,
+        ]
+        summary = {
+            "active_reservations": InventoryReservation.objects.filter(
+                status=InventoryReservation.Status.ACTIVE
+            ).count(),
+            "reservations_expiring_soon": InventoryReservation.objects.filter(
+                status=InventoryReservation.Status.ACTIVE,
+                expires_at__lte=now + timedelta(minutes=5),
+            ).count(),
+            "pending_payment_orders": Order.objects.filter(payment_status__in=pending_statuses).count(),
+            "failed_payments": Payment.objects.filter(status=Payment.Status.FAILED).count(),
+            "stale_pending_orders": Order.objects.filter(
+                payment_status__in=[Order.PaymentStatus.PENDING, Order.PaymentStatus.PENDING_PAYMENT],
+                reservation_expires_at__lt=now,
+            ).count(),
+        }
+        return Response(summary)
+
+
+class AdminInventoryOverviewView(APIView):
+    permission_classes = [IsAdminUser]
+    throttle_classes = [AdminRateThrottle]
+
+    def get(self, request):
+        low_stock_only = str(request.query_params.get("low_stock_only", "")).lower() in {"1", "true", "yes"}
+        try:
+            low_stock_threshold = int(request.query_params.get("low_stock_threshold", 5))
+        except (TypeError, ValueError):
+            low_stock_threshold = 5
+
+        queryset = (
+            Product.objects.annotate(
+                active_reserved=Coalesce(
+                    Sum(
+                        "inventory_reservations__quantity",
+                        filter=Q(inventory_reservations__status=InventoryReservation.Status.ACTIVE),
+                    ),
+                    Value(0),
+                    output_field=IntegerField(),
+                ),
+                last_reservation_expires_at=Max(
+                    "inventory_reservations__expires_at",
+                    filter=Q(inventory_reservations__status=InventoryReservation.Status.ACTIVE),
+                ),
+            )
+            .annotate(available_quantity=F("stock_quantity") - F("active_reserved"))
+            .order_by("available_quantity", "id")
+        )
+
+        if low_stock_only:
+            queryset = queryset.filter(available_quantity__lte=low_stock_threshold)
+
+        paginator = AdminInventoryPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        serializer = AdminInventoryItemSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class AdminReservationListView(APIView):
+    permission_classes = [IsAdminUser]
+    throttle_classes = [AdminRateThrottle]
+
+    def get(self, request):
+        queryset = InventoryReservation.objects.select_related("order", "product").order_by("expires_at")
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            valid_statuses = {choice[0] for choice in InventoryReservation.Status.choices}
+            if status_filter in valid_statuses:
+                queryset = queryset.filter(status=status_filter)
+
+        order_id = request.query_params.get("order_id")
+        if order_id and str(order_id).isdigit():
+            queryset = queryset.filter(order_id=int(order_id))
+
+        product_id = request.query_params.get("product_id")
+        if product_id and str(product_id).isdigit():
+            queryset = queryset.filter(product_id=int(product_id))
+
+        paginator = AdminReservationPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        serializer = AdminReservationSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class AdminFailedPaymentsView(APIView):
+    permission_classes = [IsAdminUser]
+    throttle_classes = [AdminRateThrottle]
+
+    def get(self, request):
+        try:
+            since_hours = int(request.query_params.get("since_hours", 24))
+        except (TypeError, ValueError):
+            since_hours = 24
+        since_time = timezone.now() - timedelta(hours=since_hours)
+        queryset = (
+            Payment.objects.select_related("order", "order__user")
+            .filter(status=Payment.Status.FAILED, updated_at__gte=since_time)
+            .order_by("-updated_at")
+        )
+
+        order_id = request.query_params.get("order_id")
+        if order_id and str(order_id).isdigit():
+            queryset = queryset.filter(order_id=int(order_id))
+
+        paginator = AdminFailedPaymentPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        serializer = AdminFailedPaymentSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
 class AdminOrderListView(APIView):
     permission_classes = [IsAdminUser]
     throttle_classes = [AdminRateThrottle]
@@ -201,11 +344,11 @@ class AdminOrderStatusUpdateView(APIView):
                 note=note,
             )
             if new_status == Order.Status.SHIPPED:
-                send_order_email("order_shipped", order)
+                send_order_email_task.delay("order_shipped", order.id)
             elif new_status == Order.Status.DELIVERED:
-                send_order_email("order_delivered", order)
+                send_order_email_task.delay("order_delivered", order.id)
             elif new_status == Order.Status.CANCELLED:
-                send_order_email("order_cancelled", order)
+                send_order_email_task.delay("order_cancelled", order.id)
 
         order = (
             Order.objects.select_related("user", "shipping_address")
@@ -243,7 +386,7 @@ class AdminShipOrderView(APIView):
             event_type=ShippingEvent.EventType.CREATED,
             location=serializer.validated_data.get("location", ""),
         )
-        send_order_email("order_shipped", order)
+        send_order_email_task.delay("order_shipped", order.id)
         order = (
             Order.objects.select_related("user", "shipping_address")
             .prefetch_related("items__product", "events__changed_by", "shipping_events")
@@ -273,7 +416,7 @@ class AdminDeliverOrderView(APIView):
             event_type=ShippingEvent.EventType.DELIVERED,
             location=serializer.validated_data.get("location", ""),
         )
-        send_order_email("order_delivered", order)
+        send_order_email_task.delay("order_delivered", order.id)
         order = (
             Order.objects.select_related("user", "shipping_address")
             .prefetch_related("items__product", "events__changed_by", "shipping_events")

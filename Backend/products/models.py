@@ -75,6 +75,11 @@ class Product(models.Model):
 class ProductImage(models.Model):
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="images")
     image_url = models.URLField(max_length=500)
+    cloudinary_public_id = models.CharField(max_length=255, blank=True, db_index=True)
+    width = models.PositiveIntegerField(null=True, blank=True)
+    height = models.PositiveIntegerField(null=True, blank=True)
+    bytes = models.PositiveIntegerField(null=True, blank=True)
+    format = models.CharField(max_length=24, blank=True)
     alt_text = models.CharField(max_length=255, blank=True)
     is_primary = models.BooleanField(default=False, db_index=True)
     sort_order = models.PositiveSmallIntegerField(default=0)

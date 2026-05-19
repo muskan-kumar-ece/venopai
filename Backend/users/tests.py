@@ -11,7 +11,7 @@ from rest_framework.throttling import SimpleRateThrottle
 
 from orders.models import Coupon
 
-from .models import Referral
+from .models import AuthEvent, Referral
 
 
 class UserModelTests(TestCase):
@@ -193,3 +193,47 @@ class AuthThrottlingTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+
+class AuthRefreshFlowTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = get_user_model().objects.create_user(
+            email="refresh-user@example.com",
+            password="StrongPass123",
+            name="Refresh User",
+        )
+
+    def test_token_refresh_returns_new_access_token(self):
+        login = self.client.post(
+            "/api/v1/auth/token/",
+            {"email": self.user.email, "password": "StrongPass123"},
+            format="json",
+        )
+        self.assertEqual(login.status_code, status.HTTP_200_OK)
+        refresh_token = login.data.get("refresh")
+        self.assertTrue(refresh_token)
+
+        refreshed = self.client.post(
+            "/api/v1/auth/token/refresh/",
+            {"refresh": refresh_token},
+            format="json",
+        )
+        self.assertEqual(refreshed.status_code, status.HTTP_200_OK)
+        self.assertIn("access", refreshed.data)
+        self.assertEqual(
+            AuthEvent.objects.filter(event_type=AuthEvent.EventType.TOKEN_REFRESH_SUCCESS).count(),
+            1,
+        )
+
+    def test_token_refresh_rejects_invalid_token(self):
+        response = self.client.post(
+            "/api/v1/auth/token/refresh/",
+            {"refresh": "invalid.token"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(
+            AuthEvent.objects.filter(event_type=AuthEvent.EventType.TOKEN_REFRESH_FAILED).count(),
+            1,
+        )

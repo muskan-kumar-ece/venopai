@@ -1,13 +1,13 @@
 "use client";
 
 import * as React from "react";
-import { X } from "lucide-react";
+import { AlertCircle, CheckCircle2, Info, Loader2, X } from "lucide-react";
 import { cva, type VariantProps } from "class-variance-authority";
 
 import { cn } from "@/lib/utils";
 
 const toastVariants = cva(
-  "rounded-lg shadow-lg p-4 w-[360px] border flex gap-3 items-start opacity-0 translate-x-full motion-safe:transition-all motion-safe:duration-200 motion-safe:ease-out",
+  "flex items-start gap-3 opacity-0 translate-y-2 sm:translate-x-4 sm:translate-y-0 motion-safe:transition-[opacity,transform] motion-slow",
   {
     variants: {
       variant: {
@@ -44,16 +44,24 @@ const Toast = React.forwardRef<HTMLDivElement, ToastProps>(
       return () => window.cancelAnimationFrame(frameId);
     }, []);
 
+    const Icon =
+      variant === "success" ? CheckCircle2 : variant === "error" ? AlertCircle : variant === "warning" ? AlertCircle : Info;
+
     return (
       <div
         ref={ref}
+        role={variant === "error" || variant === "warning" ? "alert" : "status"}
         className={cn(
           toastVariants({ variant }),
-          exiting ? "translate-x-full opacity-0" : isVisible && "translate-x-0 opacity-100",
+          "w-[min(calc(100vw-2rem),380px)] rounded-2xl border p-4 shadow-xl shadow-surface-900/10 backdrop-blur",
+          exiting ? "translate-y-2 opacity-0 sm:translate-x-4 sm:translate-y-0" : isVisible && "translate-x-0 translate-y-0 opacity-100",
           className,
         )}
         {...props}
       >
+        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/70 dark:bg-surface-950/40">
+          {title === "Loading" ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> : <Icon className="h-4 w-4" aria-hidden="true" />}
+        </div>
         <div className="flex-1 space-y-1">
           {title ? <p className="font-medium leading-none">{title}</p> : null}
           {description ? <p className="text-sm opacity-90">{description}</p> : null}
@@ -61,7 +69,7 @@ const Toast = React.forwardRef<HTMLDivElement, ToastProps>(
         <button
           type="button"
           aria-label="Close toast"
-          className="opacity-70 hover:opacity-100 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current focus-visible:ring-offset-2 ring-offset-background rounded-sm"
+          className="rounded-sm opacity-70 transition-opacity motion-standard hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current focus-visible:ring-offset-2 ring-offset-background"
           onClick={onClose}
         >
           <X className="h-4 w-4" />

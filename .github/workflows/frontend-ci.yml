@@ -13,8 +13,8 @@ on:
       - ".github/workflows/frontend-ci.yml"
 
 jobs:
-  lint-and-build:
-    name: Lint & Build
+  frontend-quality:
+    name: Frontend Quality
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -41,6 +41,10 @@ jobs:
       - name: Lint
         working-directory: Frontend
         run: npm run lint
+
+      - name: Typecheck
+        working-directory: Frontend
+        run: npm run typecheck
 
       - name: Build
         working-directory: Frontend

@@ -3,6 +3,7 @@ from decouple import config
 from .base import *
 
 DEBUG = False
+LOG_FORMAT = config("LOG_FORMAT", default="json")
 SECRET_KEY = config("SECRET_KEY")
 
 SECURE_SSL_REDIRECT = config("SECURE_SSL_REDIRECT", default=True, cast=bool)

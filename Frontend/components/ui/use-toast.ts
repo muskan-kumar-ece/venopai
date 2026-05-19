@@ -70,6 +70,12 @@ function toast({ title, description, variant = "info" }: ToastInput) {
   return id;
 }
 
+toast.success = (input: Omit<ToastInput, "variant">) => toast({ ...input, variant: "success" });
+toast.error = (input: Omit<ToastInput, "variant">) => toast({ ...input, variant: "error" });
+toast.warning = (input: Omit<ToastInput, "variant">) => toast({ ...input, variant: "warning" });
+toast.info = (input: Omit<ToastInput, "variant">) => toast({ ...input, variant: "info" });
+toast.loading = (input: Omit<ToastInput, "variant">) => toast({ title: input.title ?? "Loading", description: input.description, variant: "info" });
+
 function useToast() {
   const [state, setState] = React.useState<ToastState>(memoryState);
 

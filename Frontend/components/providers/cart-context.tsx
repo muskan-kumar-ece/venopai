@@ -2,74 +2,58 @@
 
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
 
-export type CartProduct = {
-  id: number;
-  name: string;
-  price: string;
+type CartUIContextValue = {
+  isDrawerOpen: boolean;
+  openDrawer: () => void;
+  closeDrawer: () => void;
+  toggleDrawer: () => void;
 };
 
-export type CartItem = CartProduct & {
-  cartItemId: string;
-};
+const CartUIContext = createContext<CartUIContextValue | undefined>(undefined);
 
-type CartContextValue = {
-  cartItems: CartItem[];
-  addToCart: (product: CartProduct) => void;
-  removeFromCart: (id: string) => void;
-  totalItems: number;
-  totalPrice: number;
-};
-
-const CartContext = createContext<CartContextValue | undefined>(undefined);
-let cartItemFallbackCounter = 0;
-
-function parsePrice(price: string) {
-  const sanitized = price.replace(/[^0-9.]/g, "");
-  if ((sanitized.match(/\./g) || []).length > 1) {
-    return 0;
-  }
-  const [whole, fraction] = sanitized.split(".");
-  const normalized = fraction !== undefined ? `${whole}.${fraction}` : whole;
-  return Number(normalized) || 0;
-}
-
+/**
+ * UI-only cart shell state (drawer open/close).
+ * Cart data lives in React Query — see `useCart()` from `@/lib/cart/use-cart`.
+ */
 export function CartProvider({ children }: { children: React.ReactNode }) {
-  const [cartItems, setCartItems] = useState<CartItem[]>([]);
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
 
-  const addToCart = useCallback((product: CartProduct) => {
-    const cartItemId =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `${product.id}-${Date.now()}-${++cartItemFallbackCounter}`;
-    setCartItems((prev) => [...prev, { ...product, cartItemId }]);
+  const openDrawer = useCallback(() => {
+    setIsDrawerOpen(true);
   }, []);
 
-  const removeFromCart = useCallback((id: string) => {
-    setCartItems((prev) => {
-      const index = prev.findIndex((item) => item.cartItemId === id);
-      if (index < 0) return prev;
-      return [...prev.slice(0, index), ...prev.slice(index + 1)];
-    });
+  const closeDrawer = useCallback(() => {
+    setIsDrawerOpen(false);
+  }, []);
+
+  const toggleDrawer = useCallback(() => {
+    setIsDrawerOpen((open) => !open);
   }, []);
 
   const value = useMemo(
     () => ({
-      cartItems,
-      addToCart,
-      removeFromCart,
-      totalItems: cartItems.length,
-      totalPrice: cartItems.reduce((sum, item) => sum + parsePrice(item.price), 0),
+      isDrawerOpen,
+      openDrawer,
+      closeDrawer,
+      toggleDrawer,
     }),
-    [addToCart, cartItems, removeFromCart],
+    [closeDrawer, isDrawerOpen, openDrawer, toggleDrawer],
   );
 
-  return <CartContext.Provider value={value}>{children}</CartContext.Provider>;
+  return <CartUIContext.Provider value={value}>{children}</CartUIContext.Provider>;
 }
 
-export function useCart() {
-  const context = useContext(CartContext);
+export function useCartUI() {
+  const context = useContext(CartUIContext);
   if (!context) {
-    throw new Error("useCart must be used within a CartProvider");
+    throw new Error("useCartUI must be used within a CartProvider");
   }
   return context;
 }
+
+/** @deprecated Use `useCart` from `@/lib/cart/use-cart` for cart data. */
+export { useCart } from "@/lib/cart/use-cart";
+
+/** @deprecated Use `CartProductInput` from `@/lib/cart/cart-utils`. */
+export type { CartProductInput as CartProduct } from "@/lib/cart/cart-utils";
+

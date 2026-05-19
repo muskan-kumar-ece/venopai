@@ -1,10 +1,23 @@
 import { apiClient } from "@/lib/api/client";
-import type { AdminOrderDetail, AdminOrderListItem, Order, OrderItem } from "@/lib/api/types";
+import type { AdminOrderDetail, AdminOrderListItem, CheckoutFromCartResponse, Order, OrderItem } from "@/lib/api/types";
 
 export async function createOrder(items: { product_id: number; quantity: number }[]) {
   const { data } = await apiClient.post<Order>(
     "/api/v1/orders/create/",
     { items },
+  );
+  return data;
+}
+
+export async function checkoutFromCart(payload: { idempotency_key: string }) {
+  const { data } = await apiClient.post<CheckoutFromCartResponse>(
+    "/api/v1/orders/checkout-from-cart/",
+    payload,
+    {
+      headers: {
+        "Idempotency-Key": payload.idempotency_key,
+      },
+    },
   );
   return data;
 }

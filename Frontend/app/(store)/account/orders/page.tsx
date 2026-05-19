@@ -2,7 +2,11 @@
 
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
+import { PackageSearch } from "lucide-react";
 
+import { EmptyState } from "@/components/feedback/empty-state";
+import { ErrorState } from "@/components/feedback/error-state";
+import { LoadingSkeleton } from "@/components/feedback/loading-skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -56,38 +60,36 @@ export default function OrdersPage() {
       </header>
 
       {isLoading ? (
-        <Card className="border-neutral-200 shadow-sm dark:border-neutral-800">
-          <CardHeader>
-            <CardTitle className="text-base">Loading your orders...</CardTitle>
-          </CardHeader>
-        </Card>
+        <LoadingSkeleton variant="list" count={4} />
       ) : null}
 
       {isError ? (
-        <Card className="border-rose-200 bg-rose-50/60 shadow-sm dark:border-rose-900/40 dark:bg-rose-900/10">
-          <CardHeader>
-            <CardTitle className="text-base text-rose-700 dark:text-rose-300">Unable to load your orders</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Button variant="secondary" onClick={() => refetch()} disabled={isFetching}>
-              {isFetching ? "Retrying..." : "Try Again"}
-            </Button>
-          </CardContent>
-        </Card>
+        <ErrorState
+          title="Unable to load your orders"
+          description="Your account order history could not be refreshed. Retry to reconnect this view."
+          onRetry={() => void refetch()}
+          retryLabel="Try again"
+          isRetrying={isFetching}
+        />
       ) : null}
 
       {data && data.length === 0 ? (
-        <Card className="border-neutral-200 shadow-sm dark:border-neutral-800">
-          <CardHeader>
-            <CardTitle className="text-xl">You have no orders yet</CardTitle>
-            <CardDescription>Explore premium products and place your first order today.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button asChild>
-              <Link href="/">Start Shopping</Link>
+        <EmptyState
+          eyebrow="Orders"
+          title="You have no orders yet"
+          description="Explore premium products and place your first order when you are ready."
+          icon={<PackageSearch className="h-7 w-7" aria-hidden="true" />}
+          action={
+            <Button asChild className="rounded-full">
+              <Link href="/products">Start shopping</Link>
             </Button>
-          </CardContent>
-        </Card>
+          }
+          secondaryAction={
+            <Button asChild variant="secondary" className="rounded-full">
+              <Link href="/cart">View cart</Link>
+            </Button>
+          }
+        />
       ) : null}
 
       {data && data.length > 0 ? (

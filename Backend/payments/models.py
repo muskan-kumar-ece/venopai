@@ -50,6 +50,12 @@ class PaymentWebhookEvent(models.Model):
     event_type = models.CharField(max_length=100)
     processed_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["event_type", "processed_at"]),
+            models.Index(fields=["processed_at"]),
+        ]
+
     def __str__(self):
         return self.event_id
 
@@ -87,3 +93,29 @@ class PaymentEvent(models.Model):
 
     def delete(self, *args, **kwargs):
         raise ValidationError("PaymentEvent is immutable and cannot be deleted.")
+
+
+class PaymentWebhookRetry(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        PROCESSING = "processing", "Processing"
+        SUCCESS = "success", "Success"
+        DEAD_LETTER = "dead_letter", "Dead Letter"
+
+    payment = models.ForeignKey(Payment, on_delete=models.CASCADE, related_name="webhook_retries")
+    event_id = models.CharField(max_length=255, db_index=True)
+    event_type = models.CharField(max_length=100)
+    payload = models.JSONField(default=dict, blank=True)
+    attempts = models.PositiveIntegerField(default=0)
+    max_attempts = models.PositiveIntegerField(default=5)
+    next_retry_at = models.DateTimeField(db_index=True)
+    last_error = models.TextField(blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["status", "next_retry_at"]),
+            models.Index(fields=["payment", "status"]),
+        ]

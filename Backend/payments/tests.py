@@ -13,7 +13,8 @@ from rest_framework import status
 from rest_framework.test import APIClient
 from rest_framework.throttling import SimpleRateThrottle
 
-from orders.models import Coupon, Order, OrderItem
+from orders.inventory import reserve_order_inventory
+from orders.models import Coupon, InventoryAuditLog, InventoryReservation, Order, OrderItem
 from products.models import Category, Product
 from users.models import Referral
 
@@ -58,6 +59,7 @@ class PaymentAPITests(TestCase):
             stock_quantity=5,
         )
         OrderItem.objects.create(order=self.order, product=self.product, quantity=2, price=Decimal("999.00"))
+        reserve_order_inventory(self.order)
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 
@@ -122,8 +124,8 @@ class PaymentAPITests(TestCase):
             SimpleRateThrottle.THROTTLE_RATES = original_rates
             cache.clear()
 
-    @patch("payments.views.send_order_email")
-    def test_payment_verification_and_duplicate_prevention(self, mock_send_order_email):
+    @patch("payments.views.send_order_email_task.delay")
+    def test_payment_verification_and_duplicate_prevention(self, mock_delay):
         payment = Payment.objects.create(
             order=self.order,
             idempotency_key="idem-2",
@@ -151,11 +153,11 @@ class PaymentAPITests(TestCase):
         self.product.refresh_from_db()
         self.assertEqual(payment.status, Payment.Status.CAPTURED)
         self.assertEqual(self.order.payment_status, Order.PaymentStatus.PAID)
-        self.assertEqual(self.order.status, Order.Status.CONFIRMED)
+        self.assertEqual(self.order.status, Order.Status.PAID)
         self.assertTrue(self.order.stock_deducted)
         self.assertEqual(self.product.stock_quantity, 3)
         self.assertEqual(payment.events.filter(event_type=PaymentEvent.EventType.PAYMENT_SUCCESS).count(), 1)
-        mock_send_order_email.assert_called_once_with("payment_success", self.order)
+        mock_delay.assert_called_once_with("payment_success", self.order.id)
         verified_at = payment.verified_at
         order_updated_at = self.order.updated_at
 
@@ -176,11 +178,11 @@ class PaymentAPITests(TestCase):
         self.assertEqual(payment.status, Payment.Status.CAPTURED)
         self.assertEqual(payment.verified_at, verified_at)
         self.assertEqual(self.order.payment_status, Order.PaymentStatus.PAID)
-        self.assertEqual(self.order.status, Order.Status.CONFIRMED)
+        self.assertEqual(self.order.status, Order.Status.PAID)
         self.assertEqual(self.order.updated_at, order_updated_at)
         self.assertEqual(self.product.stock_quantity, 3)
         self.assertEqual(payment.events.filter(event_type=PaymentEvent.EventType.REPLAY).count(), 1)
-        self.assertEqual(mock_send_order_email.call_count, 1)
+        self.assertEqual(mock_delay.call_count, 1)
 
         another_order = Order.objects.create(user=self.user, total_amount=Decimal("100.00"))
         Payment.objects.create(
@@ -206,6 +208,39 @@ class PaymentAPITests(TestCase):
         duplicate_payment = Payment.objects.get(razorpay_order_id="order_ver_2")
         self.assertEqual(duplicate_payment.events.filter(event_type=PaymentEvent.EventType.DUPLICATE).count(), 1)
 
+    def test_payment_verification_finalizes_reservation_and_audit_log(self):
+        payment = Payment.objects.create(
+            order=self.order,
+            idempotency_key="idem-finalize",
+            razorpay_order_id="order_finalize_1",
+            amount=99900,
+        )
+        signature = hmac.new(
+            b"rzp_test_secret",
+            msg=b"order_finalize_1|pay_finalize_1",
+            digestmod=hashlib.sha256,
+        ).hexdigest()
+
+        response = self.client.post(
+            "/api/v1/payments/verify/",
+            {
+                "razorpay_order_id": "order_finalize_1",
+                "razorpay_payment_id": "pay_finalize_1",
+                "razorpay_signature": signature,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        reservation = InventoryReservation.objects.get(order=self.order)
+        self.assertEqual(reservation.status, InventoryReservation.Status.FINALIZED)
+        self.assertIsNotNone(reservation.finalized_at)
+        audit = InventoryAuditLog.objects.filter(
+            order=self.order,
+            reason=InventoryAuditLog.Reason.FINALIZE,
+        ).first()
+        self.assertIsNotNone(audit)
+
     def test_first_referred_paid_order_issues_reward_coupon_once(self):
         referrer = get_user_model().objects.create_user(
             email="referrer@example.com",
@@ -220,6 +255,7 @@ class PaymentAPITests(TestCase):
         Referral.objects.create(referrer=referrer, referred_user=referred_user)
         referred_order = Order.objects.create(user=referred_user, total_amount=Decimal("500.00"))
         OrderItem.objects.create(order=referred_order, product=self.product, quantity=1, price=Decimal("500.00"))
+        reserve_order_inventory(referred_order)
         payment = Payment.objects.create(
             order=referred_order,
             idempotency_key="idem-referred",
@@ -255,7 +291,10 @@ class PaymentAPITests(TestCase):
 
     def test_payment_verification_fails_when_stock_is_insufficient(self):
         low_stock_order = Order.objects.create(user=self.user, total_amount=Decimal("999.00"))
-        OrderItem.objects.create(order=low_stock_order, product=self.product, quantity=10, price=Decimal("999.00"))
+        OrderItem.objects.create(order=low_stock_order, product=self.product, quantity=2, price=Decimal("999.00"))
+        reserve_order_inventory(low_stock_order)
+        self.product.stock_quantity = 1
+        self.product.save(update_fields=["stock_quantity", "updated_at"])
         payment = Payment.objects.create(
             order=low_stock_order,
             idempotency_key="idem-stock-low",
@@ -282,11 +321,19 @@ class PaymentAPITests(TestCase):
         low_stock_order.refresh_from_db()
         self.product.refresh_from_db()
         self.assertEqual(payment.status, Payment.Status.CREATED)
-        self.assertEqual(low_stock_order.payment_status, Order.PaymentStatus.PENDING)
+        self.assertEqual(low_stock_order.payment_status, Order.PaymentStatus.PENDING_PAYMENT)
+        self.assertEqual(low_stock_order.status, Order.Status.PENDING_PAYMENT)
         self.assertFalse(low_stock_order.stock_deducted)
-        self.assertEqual(self.product.stock_quantity, 5)
+        self.assertEqual(self.product.stock_quantity, 1)
+        self.assertEqual(
+            InventoryReservation.objects.filter(
+                order=low_stock_order,
+                status=InventoryReservation.Status.ACTIVE,
+            ).count(),
+            1,
+        )
 
-    def test_payment_verification_keeps_confirmed_order_status(self):
+    def test_payment_verification_sets_paid_status(self):
         self.order.status = Order.Status.CONFIRMED
         self.order.save(update_fields=["status", "updated_at"])
         payment = Payment.objects.create(
@@ -314,7 +361,7 @@ class PaymentAPITests(TestCase):
         payment.refresh_from_db()
         self.order.refresh_from_db()
         self.assertEqual(payment.status, Payment.Status.CAPTURED)
-        self.assertEqual(self.order.status, Order.Status.CONFIRMED)
+        self.assertEqual(self.order.status, Order.Status.PAID)
         self.assertEqual(self.order.payment_status, Order.PaymentStatus.PAID)
 
     def test_webhook_idempotency(self):
@@ -343,8 +390,15 @@ class PaymentAPITests(TestCase):
         payment.refresh_from_db()
         self.order.refresh_from_db()
         self.assertEqual(payment.status, Payment.Status.FAILED)
-        self.assertEqual(self.order.payment_status, Order.PaymentStatus.FAILED)
-        self.assertEqual(self.order.status, Order.Status.PAYMENT_FAILED)
+        self.assertEqual(self.order.payment_status, Order.PaymentStatus.CANCELLED)
+        self.assertEqual(self.order.status, Order.Status.CANCELLED)
+        self.assertEqual(
+            InventoryReservation.objects.filter(
+                order=self.order,
+                status=InventoryReservation.Status.RELEASED,
+            ).count(),
+            1,
+        )
 
         duplicate = self.client.post(
             "/api/v1/payments/webhook/",
@@ -441,7 +495,8 @@ class PaymentAPITests(TestCase):
             status=Payment.Status.FAILED,
         )
         self.order.payment_status = Order.PaymentStatus.FAILED
-        self.order.save(update_fields=["payment_status", "updated_at"])
+        self.order.status = Order.Status.FAILED
+        self.order.save(update_fields=["payment_status", "status", "updated_at"])
 
         payload = {
             "event": "payment.captured",
@@ -463,8 +518,8 @@ class PaymentAPITests(TestCase):
         self.assertEqual(payment.status, Payment.Status.FAILED)
         self.assertEqual(self.order.payment_status, Order.PaymentStatus.FAILED)
 
-    @patch("payments.views.send_order_email")
-    def test_webhook_captured_deducts_stock_once(self, mock_send_order_email):
+    @patch("payments.views.send_order_email_task.delay")
+    def test_webhook_captured_deducts_stock_once(self, mock_delay):
         payment = Payment.objects.create(
             order=self.order,
             idempotency_key="idem-captured",
@@ -491,13 +546,52 @@ class PaymentAPITests(TestCase):
         self.product.refresh_from_db()
         self.assertEqual(payment.status, Payment.Status.CAPTURED)
         self.assertEqual(self.order.payment_status, Order.PaymentStatus.PAID)
-        self.assertEqual(self.order.status, Order.Status.CONFIRMED)
+        self.assertEqual(self.order.status, Order.Status.PAID)
         self.assertTrue(self.order.stock_deducted)
         self.assertEqual(self.product.stock_quantity, 3)
-        mock_send_order_email.assert_called_once_with("payment_success", self.order)
+        mock_delay.assert_called_once_with("payment_success", self.order.id)
 
-    @patch("payments.views.send_order_email")
-    def test_refund_order_is_idempotent(self, mock_send_order_email):
+    @patch("payments.views.send_order_email_task.delay")
+    def test_webhook_replay_does_not_double_deduct(self, mock_delay):
+        payment = Payment.objects.create(
+            order=self.order,
+            idempotency_key="idem-replay",
+            razorpay_order_id="order_webhook_replay",
+            amount=99900,
+        )
+        payload = {
+            "event": "payment.captured",
+            "payload": {"payment": {"entity": {"id": "pay_web_replay", "order_id": "order_webhook_replay"}}},
+        }
+        body = json.dumps(payload).encode()
+        signature = hmac.new(b"rzp_webhook_secret", msg=body, digestmod=hashlib.sha256).hexdigest()
+
+        first = self.client.post(
+            "/api/v1/payments/webhook/",
+            data=body,
+            content_type="application/json",
+            HTTP_X_RAZORPAY_SIGNATURE=signature,
+            HTTP_X_RAZORPAY_EVENT_ID="evt_replay_1",
+        )
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock_quantity, 3)
+
+        second = self.client.post(
+            "/api/v1/payments/webhook/",
+            data=body,
+            content_type="application/json",
+            HTTP_X_RAZORPAY_SIGNATURE=signature,
+            HTTP_X_RAZORPAY_EVENT_ID="evt_replay_1",
+        )
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock_quantity, 3)
+        self.assertEqual(PaymentWebhookEvent.objects.count(), 1)
+        self.assertEqual(mock_delay.call_count, 1)
+
+    @patch("payments.views.send_order_email_task.delay")
+    def test_refund_order_is_idempotent(self, mock_delay):
         payment = Payment.objects.create(
             order=self.order,
             idempotency_key="idem-refund",
@@ -506,7 +600,7 @@ class PaymentAPITests(TestCase):
             status=Payment.Status.CAPTURED,
         )
         self.order.payment_status = Order.PaymentStatus.PAID
-        self.order.status = Order.Status.CONFIRMED
+        self.order.status = Order.Status.PAID
         self.order.save(update_fields=["payment_status", "status", "updated_at"])
 
         response = self.client.post(
@@ -521,7 +615,7 @@ class PaymentAPITests(TestCase):
         self.assertEqual(self.order.payment_status, Order.PaymentStatus.REFUNDED)
         self.assertEqual(self.order.status, Order.Status.REFUNDED)
         self.assertEqual(payment.events.filter(event_type=PaymentEvent.EventType.REFUNDED).count(), 1)
-        mock_send_order_email.assert_called_once_with("refund_processed", self.order)
+        mock_delay.assert_called_once_with("refund_processed", self.order.id)
 
         second = self.client.post(
             "/api/v1/payments/refund/",
@@ -531,7 +625,7 @@ class PaymentAPITests(TestCase):
         self.assertEqual(second.status_code, status.HTTP_200_OK)
         self.assertEqual(second.data["detail"], "Order already refunded.")
         self.assertEqual(payment.events.filter(event_type=PaymentEvent.EventType.REPLAY).count(), 1)
-        self.assertEqual(mock_send_order_email.call_count, 1)
+        self.assertEqual(mock_delay.call_count, 1)
 
     def test_refund_order_rejects_unpaid_order(self):
         Payment.objects.create(
@@ -570,7 +664,15 @@ class PaymentAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(payment.events.filter(event_type=PaymentEvent.EventType.PAYMENT_FAILED).count(), 1)
         self.order.refresh_from_db()
-        self.assertEqual(self.order.status, Order.Status.PAYMENT_FAILED)
+        self.assertEqual(self.order.payment_status, Order.PaymentStatus.CANCELLED)
+        self.assertEqual(self.order.status, Order.Status.CANCELLED)
+        self.assertEqual(
+            InventoryReservation.objects.filter(
+                order=self.order,
+                status=InventoryReservation.Status.RELEASED,
+            ).count(),
+            1,
+        )
 
     @patch("payments.services.urlopen")
     def test_payment_retry_for_failed_order_creates_new_session(self, mock_urlopen):
@@ -578,7 +680,7 @@ class PaymentAPITests(TestCase):
             {"id": "order_retry_1", "amount": 99900, "currency": "INR", "status": "created"}
         )
         self.order.payment_status = Order.PaymentStatus.FAILED
-        self.order.status = Order.Status.PAYMENT_FAILED
+        self.order.status = Order.Status.FAILED
         self.order.save(update_fields=["payment_status", "status", "updated_at"])
 
         response = self.client.post(f"/api/v1/payments/retry/{self.order.id}/")
@@ -596,7 +698,7 @@ class PaymentAPITests(TestCase):
     @patch("payments.services.urlopen")
     def test_payment_retry_is_limited_to_three_attempts(self, mock_urlopen):
         self.order.payment_status = Order.PaymentStatus.FAILED
-        self.order.status = Order.Status.PAYMENT_FAILED
+        self.order.status = Order.Status.FAILED
         self.order.save(update_fields=["payment_status", "status", "updated_at"])
         for attempt in range(3):
             mock_urlopen.return_value = MockHTTPResponse(
@@ -612,7 +714,7 @@ class PaymentAPITests(TestCase):
     @patch("payments.services.urlopen")
     def test_payment_retry_rejects_paid_order(self, mock_urlopen):
         self.order.payment_status = Order.PaymentStatus.PAID
-        self.order.status = Order.Status.CONFIRMED
+        self.order.status = Order.Status.PAID
         self.order.save(update_fields=["payment_status", "status", "updated_at"])
 
         response = self.client.post(f"/api/v1/payments/retry/{self.order.id}/")

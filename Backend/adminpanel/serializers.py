@@ -1,6 +1,8 @@
 from rest_framework import serializers
 
-from orders.models import Order, OrderEvent, OrderItem, ShippingAddress, ShippingEvent
+from orders.models import InventoryReservation, Order, OrderEvent, OrderItem, ShippingAddress, ShippingEvent
+from payments.models import Payment
+from products.models import Product
 
 class AnalyticsSummarySerializer(serializers.Serializer):
     total_revenue = serializers.DecimalField(max_digits=12, decimal_places=2)
@@ -143,3 +145,68 @@ class AdminShipOrderSerializer(serializers.Serializer):
 
 class AdminDeliverOrderSerializer(serializers.Serializer):
     location = serializers.CharField(max_length=255, required=False, allow_blank=True)
+
+
+class AdminInventoryItemSerializer(serializers.ModelSerializer):
+    product_id = serializers.IntegerField(source="id", read_only=True)
+    active_reserved = serializers.IntegerField(read_only=True)
+    available_quantity = serializers.IntegerField(read_only=True)
+    last_reservation_expires_at = serializers.DateTimeField(read_only=True, allow_null=True)
+
+    class Meta:
+        model = Product
+        fields = (
+            "product_id",
+            "sku",
+            "name",
+            "stock_quantity",
+            "active_reserved",
+            "available_quantity",
+            "is_active",
+            "last_reservation_expires_at",
+        )
+
+
+class AdminReservationSerializer(serializers.ModelSerializer):
+    order_id = serializers.IntegerField(source="order.id", read_only=True)
+    product_id = serializers.IntegerField(source="product.id", read_only=True)
+    product_name = serializers.CharField(source="product.name", read_only=True)
+    order_status = serializers.CharField(source="order.status", read_only=True)
+    order_payment_status = serializers.CharField(source="order.payment_status", read_only=True)
+
+    class Meta:
+        model = InventoryReservation
+        fields = (
+            "id",
+            "order_id",
+            "product_id",
+            "product_name",
+            "quantity",
+            "status",
+            "expires_at",
+            "created_at",
+            "order_status",
+            "order_payment_status",
+        )
+
+
+class AdminFailedPaymentSerializer(serializers.ModelSerializer):
+    order_id = serializers.IntegerField(source="order.id", read_only=True)
+    user_email = serializers.EmailField(source="order.user.email", read_only=True)
+    order_status = serializers.CharField(source="order.status", read_only=True)
+    order_payment_status = serializers.CharField(source="order.payment_status", read_only=True)
+
+    class Meta:
+        model = Payment
+        fields = (
+            "id",
+            "order_id",
+            "user_email",
+            "status",
+            "failure_reason",
+            "razorpay_order_id",
+            "razorpay_payment_id",
+            "updated_at",
+            "order_status",
+            "order_payment_status",
+        )

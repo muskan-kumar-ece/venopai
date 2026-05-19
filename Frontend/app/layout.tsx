@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { AuthProvider } from "@/components/providers/auth-provider";
+import { ObservabilityProvider } from "@/components/providers/observability-provider";
 import { QueryProvider } from "@/components/providers/query-provider";
 import "./globals.css";
 
@@ -16,9 +17,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="min-h-screen font-sans bg-neutral-50 text-neutral-800 dark:bg-neutral-900 dark:text-neutral-100">
+      <body className="min-h-dvh bg-neutral-50 font-sans text-neutral-800 dark:bg-neutral-900 dark:text-neutral-100">
         <QueryProvider>
-          <AuthProvider>{children}</AuthProvider>
+          <ObservabilityProvider>
+            <AuthProvider>{children}</AuthProvider>
+          </ObservabilityProvider>
         </QueryProvider>
       </body>
     </html>

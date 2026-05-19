@@ -1,8 +1,15 @@
 import re
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from .models import Category, FlashSale, Inventory, Product, ProductImage, Review
+from .media import (
+    build_cloudinary_url,
+    upload_product_image_to_cloudinary,
+    validate_product_image_upload,
+    validate_product_image_url,
+)
 from orders.models import Order, OrderItem
 
 
@@ -33,19 +40,102 @@ class CategorySerializer(serializers.ModelSerializer):
 
 
 class ProductImageSerializer(serializers.ModelSerializer):
+    upload_image = serializers.ImageField(write_only=True, required=False)
+    image_url_thumbnail = serializers.SerializerMethodField()
+    image_url_card = serializers.SerializerMethodField()
+    image_url_detail = serializers.SerializerMethodField()
+
+    def validate_image_url(self, value):
+        try:
+            return validate_product_image_url(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages)
+
+    def validate_upload_image(self, value):
+        try:
+            validate_product_image_upload(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages)
+        return value
+
+    def validate(self, attrs):
+        if self.instance is None and not attrs.get("image_url") and not attrs.get("upload_image"):
+            raise serializers.ValidationError("Provide image_url or upload_image.")
+        return attrs
+
+    def create(self, validated_data):
+        upload = validated_data.pop("upload_image", None)
+        if upload:
+            result = upload_product_image_to_cloudinary(upload, validated_data["product"])
+            validated_data.update(
+                image_url=result["secure_url"],
+                cloudinary_public_id=result.get("public_id", ""),
+                width=result.get("width"),
+                height=result.get("height"),
+                bytes=result.get("bytes"),
+                format=result.get("format", ""),
+            )
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        upload = validated_data.pop("upload_image", None)
+        if upload:
+            product = validated_data.get("product", instance.product)
+            result = upload_product_image_to_cloudinary(upload, product)
+            validated_data.update(
+                image_url=result["secure_url"],
+                cloudinary_public_id=result.get("public_id", ""),
+                width=result.get("width"),
+                height=result.get("height"),
+                bytes=result.get("bytes"),
+                format=result.get("format", ""),
+            )
+        return super().update(instance, validated_data)
+
+    def get_image_url_thumbnail(self, obj):
+        return build_cloudinary_url(obj.cloudinary_public_id, "thumbnail") or obj.image_url
+
+    def get_image_url_card(self, obj):
+        return build_cloudinary_url(obj.cloudinary_public_id, "card") or obj.image_url
+
+    def get_image_url_detail(self, obj):
+        return build_cloudinary_url(obj.cloudinary_public_id, "detail") or obj.image_url
+
     class Meta:
         model = ProductImage
         fields = (
             "id",
             "product",
             "image_url",
+            "image_url_thumbnail",
+            "image_url_card",
+            "image_url_detail",
+            "cloudinary_public_id",
+            "width",
+            "height",
+            "bytes",
+            "format",
+            "upload_image",
             "alt_text",
             "is_primary",
             "sort_order",
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("id", "created_at", "updated_at")
+        read_only_fields = (
+            "id",
+            "image_url_thumbnail",
+            "image_url_card",
+            "image_url_detail",
+            "cloudinary_public_id",
+            "width",
+            "height",
+            "bytes",
+            "format",
+            "created_at",
+            "updated_at",
+        )
+        extra_kwargs = {"image_url": {"required": False}}
 
 
 class InventorySerializer(serializers.ModelSerializer):
@@ -69,6 +159,10 @@ class ProductSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source="category.name", read_only=True)
     average_rating = serializers.FloatField(read_only=True)
     reviews_count = serializers.IntegerField(read_only=True)
+    image_url = serializers.SerializerMethodField()
+    image_url_card = serializers.SerializerMethodField()
+    image_url_detail = serializers.SerializerMethodField()
+    images = ProductImageSerializer(many=True, read_only=True)
 
     class Meta:
         model = Product
@@ -87,6 +181,10 @@ class ProductSerializer(serializers.ModelSerializer):
             "is_active",
             "average_rating",
             "reviews_count",
+            "image_url",
+            "image_url_card",
+            "image_url_detail",
+            "images",
             "created_at",
             "updated_at",
         )
@@ -97,6 +195,28 @@ class ProductSerializer(serializers.ModelSerializer):
 
     def validate_name(self, value):
         return strip_html_tags(value)
+
+    def _primary_image(self, obj):
+        images = list(obj.images.all())
+        if not images:
+            return None
+        return next((image for image in images if image.is_primary), images[0])
+
+    def get_image_url(self, obj):
+        image = self._primary_image(obj)
+        return image.image_url if image else None
+
+    def get_image_url_card(self, obj):
+        image = self._primary_image(obj)
+        if not image:
+            return None
+        return build_cloudinary_url(image.cloudinary_public_id, "card") or image.image_url
+
+    def get_image_url_detail(self, obj):
+        image = self._primary_image(obj)
+        if not image:
+            return None
+        return build_cloudinary_url(image.cloudinary_public_id, "detail") or image.image_url
 
 
 class ProductListSerializer(serializers.ModelSerializer):
@@ -109,6 +229,8 @@ class ProductListSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source="category.name", read_only=True)
     average_rating = serializers.FloatField(read_only=True)
     reviews_count = serializers.IntegerField(read_only=True)
+    image_url = serializers.SerializerMethodField()
+    image_url_card = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
@@ -125,8 +247,26 @@ class ProductListSerializer(serializers.ModelSerializer):
             "is_active",
             "average_rating",
             "reviews_count",
+            "image_url",
+            "image_url_card",
         )
         read_only_fields = fields
+
+    def _primary_image(self, obj):
+        images = list(obj.images.all())
+        if not images:
+            return None
+        return next((image for image in images if image.is_primary), images[0])
+
+    def get_image_url(self, obj):
+        image = self._primary_image(obj)
+        return image.image_url if image else None
+
+    def get_image_url_card(self, obj):
+        image = self._primary_image(obj)
+        if not image:
+            return None
+        return build_cloudinary_url(image.cloudinary_public_id, "card") or image.image_url
 
 
 class ProductSearchResultSerializer(serializers.ModelSerializer):

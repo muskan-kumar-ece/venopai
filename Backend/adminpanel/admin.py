@@ -44,7 +44,9 @@ def _dashboard_context(request):
     )
     return {
         "dashboard_total_orders": order_queryset.count(),
-        "dashboard_pending_orders": order_queryset.filter(status=Order.Status.PENDING).count(),
+        "dashboard_pending_orders": order_queryset.filter(
+            status__in=[Order.Status.PENDING, Order.Status.PENDING_PAYMENT, Order.Status.PAYMENT_PROCESSING]
+        ).count(),
         "dashboard_revenue": revenue,
         "dashboard_start_date": start_date.isoformat(),
         "dashboard_end_date": end_date.isoformat(),

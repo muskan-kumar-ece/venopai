@@ -20,12 +20,9 @@ from urllib.request import Request, urlopen
 
 from django.conf import settings
 from django.db import IntegrityError
-from django.db.models import F
 from django.utils import timezone
-from rest_framework.exceptions import ValidationError
 
 from orders.models import Coupon, Order
-from products.models import Product
 from users.models import Referral
 
 logger = logging.getLogger(__name__)
@@ -80,25 +77,8 @@ def deduct_order_stock(order: Order) -> None:
     """
     if order.stock_deducted:
         return
-
-    order_items = list(order.items.all())
-    if not order_items:
-        order.stock_deducted = True
-        order.save(update_fields=["stock_deducted", "updated_at"])
-        return
-
-    product_ids = [item.product_id for item in order_items]
-    # Lock rows to prevent concurrent over-deduction.
-    list(Product.objects.select_for_update().filter(id__in=product_ids))
-    for item in order_items:
-        updated = Product.objects.filter(id=item.product_id, stock_quantity__gte=item.quantity).update(
-            stock_quantity=F("stock_quantity") - item.quantity
-        )
-        if not updated:
-            raise ValidationError({"detail": "Insufficient stock for one or more items."})
-
-    order.stock_deducted = True
-    order.save(update_fields=["stock_deducted", "updated_at"])
+    from orders.inventory import finalize_order_inventory
+    finalize_order_inventory(order)
 
 
 def issue_referral_reward(order: Order) -> None:

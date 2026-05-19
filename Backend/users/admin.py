@@ -11,6 +11,7 @@ class UserAdmin(DjangoUserAdmin):
     list_filter = ("role", "is_staff", "is_active")
     search_fields = ("email", "name", "referral_owner_code")
     readonly_fields = ("created_at",)
+    list_select_related = ()
     fieldsets = (
         (None, {"fields": ("email", "password")}),
         ("Personal info", {"fields": ("name", "role")}),

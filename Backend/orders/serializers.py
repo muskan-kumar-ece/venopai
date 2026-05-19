@@ -5,6 +5,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from products.models import Product
+from products.media import build_cloudinary_url
 from vendors.services import create_vendor_orders_for_order
 from .models import Cart, CartItem, Coupon, CouponUsage, Order, OrderItem, ShippingAddress, ShippingEvent
 
@@ -16,17 +17,143 @@ class CartSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "user", "created_at", "updated_at")
 
 
-class CartItemSerializer(serializers.ModelSerializer):
+class CartProductSummarySerializer(serializers.ModelSerializer):
+    """Lightweight nested product payload for cart line items."""
+
+    category_name = serializers.CharField(source="category.name", read_only=True)
+    image_url = serializers.SerializerMethodField()
+    image_url_card = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Product
+        fields = (
+            "id",
+            "name",
+            "slug",
+            "sku",
+            "price",
+            "stock_quantity",
+            "is_active",
+            "is_refurbished",
+            "condition_grade",
+            "category_name",
+            "image_url",
+            "image_url_card",
+        )
+        read_only_fields = fields
+
+    def get_image_url(self, product):
+        images = list(product.images.all())
+        if not images:
+            return None
+        primary = next((image for image in images if image.is_primary), images[0])
+        return primary.image_url
+
+    def get_image_url_card(self, product):
+        images = list(product.images.all())
+        if not images:
+            return None
+        primary = next((image for image in images if image.is_primary), images[0])
+        return build_cloudinary_url(primary.cloudinary_public_id, "card") or primary.image_url
+
+
+class CartItemReadSerializer(serializers.ModelSerializer):
+    product = CartProductSummarySerializer(read_only=True)
+    line_total = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CartItem
+        fields = (
+            "id",
+            "cart",
+            "product",
+            "quantity",
+            "line_total",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = fields
+
+    def get_line_total(self, obj):
+        total = (obj.product.price * obj.quantity).quantize(Decimal("0.01"))
+        return str(total)
+
+
+class CartItemWriteSerializer(serializers.ModelSerializer):
+    """Create/update cart lines by product id; merges quantity on duplicate product."""
+
     def validate_cart(self, cart):
         request = self.context.get("request")
         if request and request.user.is_authenticated and cart.user_id != request.user.id:
             raise serializers.ValidationError("You can only add items to your own cart.")
+        if not cart.is_active:
+            raise serializers.ValidationError("You can only modify your active cart.")
         return cart
+
+    def validate_product(self, product):
+        if not product.is_active:
+            raise serializers.ValidationError("Product is not available.")
+        return product
 
     class Meta:
         model = CartItem
         fields = ("id", "cart", "product", "quantity", "created_at", "updated_at")
         read_only_fields = ("id", "created_at", "updated_at")
+        # Uniqueness is enforced in create() by merging quantity (one row per product).
+        validators = []
+
+    @transaction.atomic
+    def create(self, validated_data):
+        cart = validated_data["cart"]
+        product = validated_data["product"]
+        quantity = validated_data.get("quantity", 1)
+
+        existing_item = (
+            CartItem.objects.select_for_update()
+            .filter(cart=cart, product=product)
+            .first()
+        )
+        if existing_item is not None:
+            existing_item.quantity += quantity
+            existing_item.save(update_fields=["quantity", "updated_at"])
+            return existing_item
+
+        return CartItem.objects.create(cart=cart, product=product, quantity=quantity)
+
+
+# Backward-compatible alias for imports expecting CartItemSerializer on write paths.
+CartItemSerializer = CartItemWriteSerializer
+
+
+class ServerCartViewSerializer(serializers.ModelSerializer):
+    """Active cart with nested items and rollups for the storefront API layer."""
+
+    items = CartItemReadSerializer(many=True, read_only=True)
+    item_count = serializers.SerializerMethodField()
+    subtotal = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Cart
+        fields = (
+            "id",
+            "user",
+            "is_active",
+            "created_at",
+            "updated_at",
+            "items",
+            "item_count",
+            "subtotal",
+        )
+        read_only_fields = fields
+
+    def get_item_count(self, cart):
+        return sum(item.quantity for item in cart.items.all())
+
+    def get_subtotal(self, cart):
+        total = Decimal("0.00")
+        for item in cart.items.all():
+            total += item.product.price * item.quantity
+        return str(total.quantize(Decimal("0.01")))
 
 
 class OrderSerializer(serializers.ModelSerializer):
@@ -42,6 +169,8 @@ class OrderSerializer(serializers.ModelSerializer):
             "status",
             "payment_status",
             "tracking_id",
+            "reservation_expires_at",
+            "reservation_released_at",
             "shipping_provider",
             "shipped_at",
             "delivered_at",
@@ -170,6 +299,8 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             "status",
             "payment_status",
             "tracking_id",
+            "reservation_expires_at",
+            "reservation_released_at",
             "shipping_provider",
             "shipped_at",
             "delivered_at",

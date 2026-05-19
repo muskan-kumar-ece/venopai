@@ -56,6 +56,10 @@ class CartItem(models.Model):
 
 class Order(models.Model):
     class Status(models.TextChoices):
+        PENDING_PAYMENT = "pending_payment", "Pending Payment"
+        PAYMENT_PROCESSING = "payment_processing", "Payment Processing"
+        PAID = "paid", "Paid"
+        FAILED = "failed", "Failed"
         PENDING = "pending", "Pending"
         CONFIRMED = "confirmed", "Confirmed"
         PAYMENT_FAILED = "payment_failed", "Payment Failed"
@@ -65,12 +69,22 @@ class Order(models.Model):
         REFUNDED = "refunded", "Refunded"
 
     class PaymentStatus(models.TextChoices):
+        PENDING_PAYMENT = "pending_payment", "Pending Payment"
+        PAYMENT_PROCESSING = "payment_processing", "Payment Processing"
         PENDING = "pending", "Pending"
         PAID = "paid", "Paid"
         FAILED = "failed", "Failed"
+        CANCELLED = "cancelled", "Cancelled"
         REFUNDED = "refunded", "Refunded"
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="orders")
+    source_cart = models.ForeignKey(
+        "Cart",
+        on_delete=models.PROTECT,
+        related_name="orders",
+        null=True,
+        blank=True,
+    )
     total_amount = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
     gross_amount = models.DecimalField(
         max_digits=12,
@@ -93,6 +107,8 @@ class Order(models.Model):
         db_index=True,
     )
     stock_deducted = models.BooleanField(default=False)
+    reservation_expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    reservation_released_at = models.DateTimeField(null=True, blank=True)
     idempotency_key = models.CharField(max_length=100, null=True, blank=True, db_index=True)
     applied_coupon = models.ForeignKey("Coupon", null=True, blank=True, on_delete=models.SET_NULL, related_name="orders")
     tracking_id = models.CharField(max_length=100, blank=True, null=True, unique=True)
@@ -111,6 +127,7 @@ class Order(models.Model):
             models.Index(fields=["user", "payment_status", "created_at"]),
             models.Index(fields=["payment_status", "created_at"]),
             models.Index(fields=["status", "created_at"]),
+            models.Index(fields=["payment_status", "reservation_expires_at"]),
         ]
         constraints = [
             models.UniqueConstraint(
@@ -309,3 +326,57 @@ class CouponUsage(models.Model):
 
     def __str__(self):
         return f"{self.coupon.code} - order {self.order_id}"
+
+
+class InventoryReservation(models.Model):
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        FINALIZED = "finalized", "Finalized"
+        RELEASED = "released", "Released"
+        EXPIRED = "expired", "Expired"
+
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="inventory_reservations")
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="inventory_reservations")
+    quantity = models.PositiveIntegerField(validators=[MinValueValidator(1)])
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE, db_index=True)
+    expires_at = models.DateTimeField(db_index=True)
+    released_at = models.DateTimeField(null=True, blank=True)
+    finalized_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["order", "status"]),
+            models.Index(fields=["product", "status"]),
+            models.Index(fields=["status", "expires_at"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=["order", "product"], name="unique_reservation_per_order_product"),
+        ]
+
+
+class InventoryAuditLog(models.Model):
+    class Reason(models.TextChoices):
+        RESERVE = "reserve", "Reserve"
+        RELEASE = "release", "Release"
+        FINALIZE = "finalize", "Finalize"
+        ADJUSTMENT = "adjustment", "Adjustment"
+
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="inventory_audits")
+    order = models.ForeignKey(Order, on_delete=models.SET_NULL, related_name="inventory_audits", null=True, blank=True)
+    payment_reference = models.CharField(max_length=255, blank=True)
+    reason = models.CharField(max_length=20, choices=Reason.choices)
+    before_quantity = models.IntegerField()
+    after_quantity = models.IntegerField()
+    delta = models.IntegerField()
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=["product", "created_at"]),
+            models.Index(fields=["order", "created_at"]),
+            models.Index(fields=["reason", "created_at"]),
+        ]

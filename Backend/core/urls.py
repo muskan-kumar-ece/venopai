@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
+from django.conf import settings
 
 from adminpanel.views import (
     AdminDeliverOrderView,
@@ -23,7 +24,7 @@ urlpatterns = [
     path("admin/orders/<int:order_id>/deliver/", AdminDeliverOrderView.as_view(), name="admin-orders-deliver"),
 
     # Django admin UI (must come after the API routes above)
-    path("admin/", admin.site.urls),
+    path(getattr(settings, "ADMIN_URL_PATH", "admin/"), admin.site.urls),
 
     # Versioned REST API
     path("api/v1/", include("core.api_urls")),

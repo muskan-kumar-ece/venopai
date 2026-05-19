@@ -32,10 +32,27 @@ class ProductAdmin(admin.ModelAdmin):
 
 @admin.register(ProductImage)
 class ProductImageAdmin(admin.ModelAdmin):
-    list_display = ("product", "is_primary", "sort_order", "updated_at")
+    list_display = ("product", "is_primary", "sort_order", "provider", "dimensions", "updated_at")
     list_filter = ("is_primary", "updated_at")
-    search_fields = ("product__name", "product__sku", "alt_text")
+    search_fields = ("product__name", "product__sku", "alt_text", "cloudinary_public_id", "image_url")
     list_select_related = ("product",)
+    readonly_fields = ("cloudinary_public_id", "width", "height", "bytes", "format", "preview")
+
+    @admin.display(description="Provider")
+    def provider(self, obj):
+        return "Cloudinary" if obj.cloudinary_public_id else "External URL"
+
+    @admin.display(description="Dimensions")
+    def dimensions(self, obj):
+        if obj.width and obj.height:
+            return f"{obj.width}x{obj.height}"
+        return "-"
+
+    @admin.display(description="Preview")
+    def preview(self, obj):
+        if not obj.image_url:
+            return "-"
+        return format_html('<img src="{}" alt="" style="max-width:180px;max-height:180px;" />', obj.image_url)
 
 
 @admin.register(Inventory)

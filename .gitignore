@@ -1,0 +1,197 @@
+# ==============================================================================
+# VenoPai monorepo ignore rules
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Secrets and local environment files
+# Keep example templates tracked, but never commit real credentials.
+# ------------------------------------------------------------------------------
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+!.env.*.example
+!*.env.example
+!*.env.*.example
+
+# Common credential and key material
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*.kubeconfig
+service-account*.json
+*service_account*.json
+*credentials*.json
+*secret*.json
+secrets/
+credentials/
+
+# ------------------------------------------------------------------------------
+# Python / Django
+# ------------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+pip-wheel-metadata/
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+Backend/venv/
+Backend/.venv/
+
+# Django generated assets and local data
+db.sqlite3
+db.sqlite3-journal
+*.sqlite
+*.sqlite3
+media/
+staticfiles/
+Backend/media/
+Backend/staticfiles/
+Backend/db.sqlite3
+Backend/db.sqlite3-journal
+
+# ------------------------------------------------------------------------------
+# Node / Next.js
+# ------------------------------------------------------------------------------
+node_modules/
+Frontend/node_modules/
+.next/
+Frontend/.next/
+out/
+Frontend/out/
+.vercel/
+Frontend/.vercel/
+.turbo/
+Frontend/.turbo/
+.swc/
+Frontend/.swc/
+next-env.d.ts
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Package manager caches
+.npm/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnp.*
+
+# ------------------------------------------------------------------------------
+# Test, coverage, and browser automation artifacts
+# ------------------------------------------------------------------------------
+coverage/
+playwright-report/
+test-results/
+.playwright-mcp/
+Frontend/playwright-report/
+Frontend/test-results/
+Backend/.pytest_cache/
+
+# ------------------------------------------------------------------------------
+# Logs and runtime files
+# ------------------------------------------------------------------------------
+logs/
+*.log
+*.log.*
+*.pid
+*.seed
+*.pid.lock
+celerybeat-schedule
+celerybeat.pid
+*.sock
+
+# ------------------------------------------------------------------------------
+# Docker and local infrastructure leftovers
+# ------------------------------------------------------------------------------
+.docker/
+docker-data/
+docker-volumes/
+postgres-data/
+redis-data/
+*.dump
+*.sql.gz
+*.tar.gz
+
+# ------------------------------------------------------------------------------
+# OS, editor, and IDE files
+# ------------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.Spotlight-V100/
+.Trashes/
+
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.example.json
+.idea/
+*.iml
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# ------------------------------------------------------------------------------
+# Temporary and generated local files
+# ------------------------------------------------------------------------------
+tmp/
+temp/
+.tmp/
+.temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+*.swo
+*~
+
+# ------------------------------------------------------------------------------
+# AI tooling, assistant caches, and local workspace metadata
+# ------------------------------------------------------------------------------
+.codex/
+.cursor/
+.continue/
+.aider*
+.ai/
+.agent/
+.agents/cache/
+.claude/
+.windsurf/
+.history/

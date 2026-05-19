@@ -1,0 +1,22 @@
+name: Deploy Staging (Example)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -t venopai-backend:staging -f Backend/Dockerfile.prod Backend
+
+      - name: Build frontend image
+        run: docker build -t venopai-frontend:staging -f Frontend/Dockerfile.prod Frontend
+
+      - name: Compose config validation
+        run: docker compose -f docker-compose.prod.yml config
+
+      - name: Placeholder deploy step
+        run: echo "Push images and run remote deploy command here"

@@ -1,0 +1,106 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME:-ecommerce_dev}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_dev_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_dev_data:/data
+
+  backend:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+    env_file:
+      - ./Backend/.env.local
+    volumes:
+      - ./Backend:/app
+      - backend_dev_media:/app/media
+    environment:
+      DJANGO_ENV: dev
+      DB_HOST: postgres
+      DB_PORT: 5432
+      CACHE_REDIS_URL: redis://redis:6379/1
+      REDIS_URL: redis://redis:6379/2
+      CHANNEL_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "python manage.py migrate &&
+             daphne -b 0.0.0.0 -p 8000 core.asgi:application"
+
+  worker:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+    env_file:
+      - ./Backend/.env.local
+    volumes:
+      - ./Backend:/app
+    environment:
+      DJANGO_ENV: dev
+      DB_HOST: postgres
+      DB_PORT: 5432
+      CACHE_REDIS_URL: redis://redis:6379/1
+      REDIS_URL: redis://redis:6379/2
+      CHANNEL_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - postgres
+      - redis
+    command: celery -A core worker -l info --concurrency=2
+
+  scheduler:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+    env_file:
+      - ./Backend/.env.local
+    volumes:
+      - ./Backend:/app
+    environment:
+      DJANGO_ENV: dev
+      DB_HOST: postgres
+      DB_PORT: 5432
+      CACHE_REDIS_URL: redis://redis:6379/1
+      REDIS_URL: redis://redis:6379/2
+      CHANNEL_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - postgres
+      - redis
+    command: celery -A core beat -l info
+
+  frontend:
+    build:
+      context: ./Frontend
+      dockerfile: Dockerfile
+    env_file:
+      - ./Frontend/.env.local
+    volumes:
+      - ./Frontend:/app
+      - /app/node_modules
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    command: npm run dev
+
+volumes:
+  pg_dev_data:
+  redis_dev_data:
+  backend_dev_media:

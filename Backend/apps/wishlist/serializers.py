@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from products.models import Product
+from products.media import build_cloudinary_url
 
 from .models import Wishlist
 
@@ -8,9 +9,11 @@ from .models import Wishlist
 def get_product_image_url(product):
     primary_image = product.images.filter(is_primary=True).first()
     if primary_image:
-        return primary_image.image_url
+        return build_cloudinary_url(primary_image.cloudinary_public_id, "card") or primary_image.image_url
     fallback_image = product.images.first()
-    return fallback_image.image_url if fallback_image else None
+    if fallback_image:
+        return build_cloudinary_url(fallback_image.cloudinary_public_id, "card") or fallback_image.image_url
+    return None
 
 
 class WishlistProductSerializer(serializers.ModelSerializer):

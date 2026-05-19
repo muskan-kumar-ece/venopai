@@ -90,3 +90,27 @@ class Referral(models.Model):
             except IntegrityError:
                 continue
         raise IntegrityError("Unable to generate unique referral code.")
+
+
+class AuthEvent(models.Model):
+    class EventType(models.TextChoices):
+        TOKEN_REFRESH_ATTEMPT = "token_refresh_attempt", "Token Refresh Attempt"
+        TOKEN_REFRESH_FAILED = "token_refresh_failed", "Token Refresh Failed"
+        TOKEN_REFRESH_SUCCESS = "token_refresh_success", "Token Refresh Success"
+        LOGIN_ATTEMPT = "login_attempt", "Login Attempt"
+        LOGIN_FAILED = "login_failed", "Login Failed"
+        LOGIN_SUCCESS = "login_success", "Login Success"
+
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="auth_events")
+    event_type = models.CharField(max_length=40, choices=EventType.choices)
+    request_id = models.CharField(max_length=100, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=["event_type", "created_at"]),
+            models.Index(fields=["user", "created_at"]),
+            models.Index(fields=["request_id", "created_at"]),
+        ]

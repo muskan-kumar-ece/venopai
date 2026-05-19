@@ -1,0 +1,27 @@
+name: Deploy Production (Example)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate compose topology
+        run: docker compose -f docker-compose.prod.yml config
+      - name: Migration drift check
+        run: |
+          python -m pip install -r Backend/requirements.txt
+          cd Backend
+          python manage.py makemigrations --check --dry-run
+
+  deploy:
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Placeholder deploy
+        run: echo "Run blue/green or rolling deployment using docker-compose.prod.yml"

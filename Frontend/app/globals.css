@@ -1,3 +1,5 @@
+@import "../lib/design-system-tokens.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -6,6 +8,12 @@
   :root {
     color-scheme: light;
     --background: 249 250 251; /* neutral-50 */
+    --store-sticky-top: calc(7.75rem + env(safe-area-inset-top));
+    --motion-fast: 140ms;
+    --motion-standard: 220ms;
+    --motion-slow: 320ms;
+    --motion-ease: cubic-bezier(0.2, 0, 0, 1);
+    --motion-ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   .dark {
@@ -16,20 +24,134 @@
 
 html {
   scroll-behavior: smooth;
+  overflow-x: hidden;
 }
 
 body {
   @apply bg-neutral-50 text-neutral-800 antialiased;
+  min-width: 320px;
+  overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+@media (max-width: 640px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
 }
 
 ::selection {
   @apply bg-primary-200;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes sheet-in-right {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes sheet-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes sheet-in-bottom {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes sheet-in-top {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@layer utilities {
+  .motion-standard {
+    transition-duration: var(--motion-standard);
+    transition-timing-function: var(--motion-ease);
+  }
+
+  .motion-slow {
+    transition-duration: var(--motion-slow);
+    transition-timing-function: var(--motion-ease-emphasized);
+  }
+
+  .motion-press {
+    transition-duration: var(--motion-fast);
+    transition-timing-function: var(--motion-ease);
+  }
+
+  .tap-highlight-none {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .pt-safe {
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .h-dvh {
+    height: 100dvh;
+  }
+
+  .min-h-dvh {
+    min-height: 100dvh;
+  }
+
+  .max-h-dvh {
+    max-height: 100dvh;
+  }
+}
+
 a {
-  @apply transition-colors hover:text-neutral-900;
+  @apply transition-colors motion-standard hover:text-neutral-900;
 }
 
 .dark a {

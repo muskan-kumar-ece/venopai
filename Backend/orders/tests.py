@@ -15,10 +15,24 @@ from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 from rest_framework.throttling import SimpleRateThrottle
 
 from products.models import Category, Product
+from payments.models import Payment
 
 from .cart_recovery import send_abandoned_cart_reminders
-from .models import Cart, Coupon, CouponUsage, EmailEvent, Order, OrderEvent, OrderItem, ShippingAddress, ShippingEvent
+from .inventory import expire_stale_reservations, reserve_order_inventory
+from .models import (
+    Cart,
+    Coupon,
+    CouponUsage,
+    EmailEvent,
+    InventoryReservation,
+    Order,
+    OrderEvent,
+    OrderItem,
+    ShippingAddress,
+    ShippingEvent,
+)
 from .notifications import send_order_email
+from .tasks import cleanup_stale_checkout_sessions_task
 from .views import OrderViewSet
 
 
@@ -131,8 +145,8 @@ class OrderAPITests(TestCase):
         self.assertEqual(first_response.data["id"], second_response.data["id"])
         self.assertEqual(Order.objects.filter(user=user, idempotency_key="order-key-1").count(), 1)
 
-    @patch("orders.views.send_order_email")
-    def test_customer_can_cancel_non_shipped_order(self, mock_send_order_email):
+    @patch("orders.views.send_order_email_task.delay")
+    def test_customer_can_cancel_non_shipped_order(self, mock_delay):
         user = get_user_model().objects.create_user(
             email="canceluser@example.com",
             password="StrongPass123",
@@ -148,7 +162,7 @@ class OrderAPITests(TestCase):
         order.refresh_from_db()
         self.assertEqual(order.status, Order.Status.CANCELLED)
         self.assertTrue(order.events.filter(new_status=Order.Status.CANCELLED).exists())
-        mock_send_order_email.assert_called_once_with("order_cancelled", order)
+        mock_delay.assert_called_once_with("order_cancelled", order.id)
 
     def test_customer_cannot_cancel_shipped_order(self):
         user = get_user_model().objects.create_user(
@@ -751,8 +765,8 @@ class AdminOrderManagementAPITests(TestCase):
         self.assertEqual(event.new_status, Order.Status.CONFIRMED)
         self.assertEqual(event.changed_by, self.admin_user)
 
-    @patch("adminpanel.views.send_order_email")
-    def test_admin_ship_endpoint_sets_tracking_and_creates_shipping_event(self, mock_send_order_email):
+    @patch("adminpanel.views.send_order_email_task.delay")
+    def test_admin_ship_endpoint_sets_tracking_and_creates_shipping_event(self, mock_delay):
         self.client.force_authenticate(user=self.admin_user)
         self.order.status = Order.Status.CONFIRMED
         self.order.save(update_fields=["status", "updated_at"])
@@ -772,10 +786,10 @@ class AdminOrderManagementAPITests(TestCase):
         shipping_event = ShippingEvent.objects.get(order=self.order)
         self.assertEqual(shipping_event.event_type, ShippingEvent.EventType.CREATED)
         self.assertEqual(shipping_event.location, "Bengaluru Hub")
-        mock_send_order_email.assert_called_once_with("order_shipped", self.order)
+        mock_delay.assert_called_once_with("order_shipped", self.order.id)
 
-    @patch("adminpanel.views.send_order_email")
-    def test_admin_deliver_endpoint_marks_order_delivered_and_creates_event(self, mock_send_order_email):
+    @patch("adminpanel.views.send_order_email_task.delay")
+    def test_admin_deliver_endpoint_marks_order_delivered_and_creates_event(self, mock_delay):
         self.client.force_authenticate(user=self.admin_user)
         self.order.status = Order.Status.SHIPPED
         self.order.shipped_at = timezone.now() - timedelta(hours=3)
@@ -795,10 +809,10 @@ class AdminOrderManagementAPITests(TestCase):
         self.assertIsNotNone(self.order.delivered_at)
         shipping_event = ShippingEvent.objects.get(order=self.order, event_type=ShippingEvent.EventType.DELIVERED)
         self.assertEqual(shipping_event.location, "Customer Address")
-        mock_send_order_email.assert_called_once_with("order_delivered", self.order)
+        mock_delay.assert_called_once_with("order_delivered", self.order.id)
 
-    @patch("adminpanel.views.send_order_email")
-    def test_admin_status_update_triggers_shipped_and_delivered_emails(self, mock_send_order_email):
+    @patch("adminpanel.views.send_order_email_task.delay")
+    def test_admin_status_update_triggers_shipped_and_delivered_emails(self, mock_delay):
         self.client.force_authenticate(user=self.admin_user)
 
         shipped_response = self.client.post(
@@ -814,9 +828,9 @@ class AdminOrderManagementAPITests(TestCase):
 
         self.assertEqual(shipped_response.status_code, status.HTTP_200_OK)
         self.assertEqual(delivered_response.status_code, status.HTTP_200_OK)
-        self.assertEqual(mock_send_order_email.call_count, 2)
-        mock_send_order_email.assert_any_call("order_shipped", self.order)
-        mock_send_order_email.assert_any_call("order_delivered", self.order)
+        self.assertEqual(mock_delay.call_count, 2)
+        mock_delay.assert_any_call("order_shipped", self.order.id)
+        mock_delay.assert_any_call("order_delivered", self.order.id)
 
 
 @override_settings(
@@ -940,3 +954,239 @@ class AbandonedCartRecoveryTests(TestCase):
         call_command("send_abandoned_cart_reminders")
 
         self.assertEqual(len(mail.outbox), 1)
+
+
+class ServerCartApiTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            email="server-cart@example.com",
+            password="StrongPass123",
+            name="Server Cart User",
+        )
+        self.category = Category.objects.create(name="Components")
+        self.product = Product.objects.create(
+            category=self.category,
+            name="Arduino Kit",
+            description="Starter kit",
+            price=Decimal("1499.00"),
+            sku="ARD-001",
+            stock_quantity=25,
+            is_refurbished=False,
+            condition_grade="A",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_active_cart_endpoint_creates_empty_cart(self):
+        response = self.client.get("/api/v1/orders/carts/active/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["is_active"])
+        self.assertEqual(response.data["items"], [])
+        self.assertEqual(response.data["item_count"], 0)
+        self.assertEqual(response.data["subtotal"], "0.00")
+        self.assertEqual(Cart.objects.filter(user=self.user, is_active=True).count(), 1)
+
+    def test_cart_item_list_returns_nested_product(self):
+        cart = Cart.objects.create(user=self.user, is_active=True)
+        self.client.post(
+            "/api/v1/orders/cart-items/",
+            {"cart": cart.id, "product": self.product.id, "quantity": 2},
+            format="json",
+        )
+
+        response = self.client.get("/api/v1/orders/cart-items/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["product"]["id"], self.product.id)
+        self.assertEqual(response.data[0]["product"]["name"], "Arduino Kit")
+        self.assertEqual(response.data[0]["quantity"], 2)
+        self.assertEqual(response.data[0]["line_total"], "2998.00")
+
+    def test_add_same_product_merges_quantity(self):
+        cart = Cart.objects.create(user=self.user, is_active=True)
+        self.client.post(
+            "/api/v1/orders/cart-items/",
+            {"cart": cart.id, "product": self.product.id, "quantity": 1},
+            format="json",
+        )
+        self.client.post(
+            "/api/v1/orders/cart-items/",
+            {"cart": cart.id, "product": self.product.id, "quantity": 3},
+            format="json",
+        )
+
+        cart_item = cart.items.get(product=self.product)
+        self.assertEqual(cart_item.quantity, 4)
+
+    def test_clear_active_cart_removes_items(self):
+        cart = Cart.objects.create(user=self.user, is_active=True)
+        cart.items.create(product=self.product, quantity=1)
+
+        response = self.client.delete("/api/v1/orders/carts/active/clear/")
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(cart.items.count(), 0)
+        self.assertTrue(Cart.objects.filter(pk=cart.pk, is_active=True).exists())
+
+
+@override_settings(
+    RAZORPAY_KEY_ID="rzp_test_key",
+    RAZORPAY_KEY_SECRET="rzp_test_secret",
+)
+class CheckoutLifecycleTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            email="checkout@example.com",
+            password="StrongPass123",
+            name="Checkout User",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.category = Category.objects.create(name="Checkout Category")
+        self.product = Product.objects.create(
+            category=self.category,
+            name="Checkout Product",
+            description="Checkout ready",
+            price=Decimal("999.00"),
+            sku="CHK-001",
+            stock_quantity=5,
+        )
+        self.cart = Cart.objects.create(user=self.user, is_active=True)
+        self.cart.items.create(product=self.product, quantity=2)
+
+    @patch("orders.views.create_razorpay_order")
+    def test_checkout_from_cart_creates_reservation_and_payment(self, mock_create):
+        mock_create.return_value = {
+            "id": "order_checkout_1",
+            "amount": 199800,
+            "currency": "INR",
+            "status": "created",
+        }
+
+        response = self.client.post(
+            "/api/v1/orders/checkout-from-cart/",
+            {},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="checkout-1",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        order_id = response.data["order"]["id"]
+        order = Order.objects.get(id=order_id)
+        self.assertEqual(order.status, Order.Status.PENDING_PAYMENT)
+        self.assertEqual(order.payment_status, Order.PaymentStatus.PENDING_PAYMENT)
+        self.assertIsNotNone(order.reservation_expires_at)
+        self.assertEqual(
+            InventoryReservation.objects.filter(
+                order=order,
+                status=InventoryReservation.Status.ACTIVE,
+            ).count(),
+            1,
+        )
+        payment = Payment.objects.get(order=order)
+        self.assertEqual(payment.razorpay_order_id, "order_checkout_1")
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock_quantity, 5)
+
+        repeat = self.client.post(
+            "/api/v1/orders/checkout-from-cart/",
+            {},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="checkout-1",
+        )
+
+        self.assertEqual(repeat.status_code, status.HTTP_200_OK)
+        self.assertEqual(repeat.data["order"]["id"], order.id)
+
+    @patch("orders.views.create_razorpay_order")
+    def test_checkout_respects_inventory_contention(self, mock_create):
+        mock_create.side_effect = [
+            {"id": "order_checkout_user1", "amount": 99900, "currency": "INR", "status": "created"},
+        ]
+        other_user = get_user_model().objects.create_user(
+            email="checkout2@example.com",
+            password="StrongPass123",
+            name="Checkout User 2",
+        )
+        other_client = APIClient()
+        other_client.force_authenticate(user=other_user)
+        other_cart = Cart.objects.create(user=other_user, is_active=True)
+        other_cart.items.create(product=self.product, quantity=4)
+
+        first = self.client.post(
+            "/api/v1/orders/checkout-from-cart/",
+            {},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="checkout-first",
+        )
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+
+        second = other_client.post(
+            "/api/v1/orders/checkout-from-cart/",
+            {},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="checkout-second",
+        )
+
+        self.assertEqual(second.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            InventoryReservation.objects.filter(order__user=other_user).count(),
+            0,
+        )
+
+
+class ReservationExpirationTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            email="reserve@example.com",
+            password="StrongPass123",
+            name="Reserve User",
+        )
+        self.category = Category.objects.create(name="Reservation Category")
+        self.product = Product.objects.create(
+            category=self.category,
+            name="Reservation Product",
+            description="Reserved",
+            price=Decimal("499.00"),
+            sku="RSV-001",
+            stock_quantity=3,
+        )
+        self.order = Order.objects.create(
+            user=self.user,
+            total_amount=Decimal("998.00"),
+        )
+        OrderItem.objects.create(order=self.order, product=self.product, quantity=2, price=self.product.price)
+        reserve_order_inventory(self.order)
+
+    def test_expire_stale_reservations_cancels_order(self):
+        past = timezone.now() - timedelta(minutes=20)
+        Order.objects.filter(id=self.order.id).update(reservation_expires_at=past)
+        InventoryReservation.objects.filter(order=self.order).update(expires_at=past)
+
+        released_count = expire_stale_reservations(now=timezone.now())
+
+        self.assertEqual(released_count, 1)
+        self.order.refresh_from_db()
+        reservation = InventoryReservation.objects.get(order=self.order)
+        self.assertEqual(self.order.payment_status, Order.PaymentStatus.CANCELLED)
+        self.assertEqual(self.order.status, Order.Status.CANCELLED)
+        self.assertEqual(reservation.status, InventoryReservation.Status.RELEASED)
+        self.assertIsNotNone(self.order.reservation_released_at)
+
+    @override_settings(
+        CELERY_TASK_ALWAYS_EAGER=True,
+        CELERY_TASK_EAGER_PROPAGATES=True,
+    )
+    def test_cleanup_task_releases_stale_pending_orders(self):
+        stale_time = timezone.now() - timedelta(hours=3)
+        Order.objects.filter(id=self.order.id).update(created_at=stale_time)
+
+        cleanup_stale_checkout_sessions_task.delay()
+
+        self.order.refresh_from_db()
+        reservation = InventoryReservation.objects.get(order=self.order)
+        self.assertEqual(self.order.payment_status, Order.PaymentStatus.CANCELLED)
+        self.assertEqual(self.order.status, Order.Status.CANCELLED)
+        self.assertEqual(reservation.status, InventoryReservation.Status.RELEASED)

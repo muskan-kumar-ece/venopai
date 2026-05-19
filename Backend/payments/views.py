@@ -1,8 +1,10 @@
 import hashlib
 import hmac
 import logging
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
+import sentry_sdk
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
@@ -12,10 +14,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.throttles import PaymentRateThrottle, WebhookRateThrottle
-from orders.notifications import send_order_email
+from core.observability import bind_context, log_event, metric_incr
+from orders.cart_services import finalize_cart_after_payment
+from orders.inventory import release_order_inventory
+from orders.tasks import send_order_email_task
 from orders.models import Order
 
-from .models import Payment, PaymentEvent, PaymentWebhookEvent
+from .models import Payment, PaymentEvent, PaymentWebhookEvent, PaymentWebhookRetry
 from .services import (
     MAX_RETRY_ATTEMPTS,
     RazorpayIntegrationError,
@@ -130,7 +135,10 @@ class RetryPaymentView(APIView):
             return Response({"detail": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
         if order.payment_status == Order.PaymentStatus.PAID:
             return Response({"detail": "Payment already completed for this order."}, status=status.HTTP_409_CONFLICT)
-        if order.payment_status != Order.PaymentStatus.FAILED:
+        if order.reservation_expires_at and order.reservation_expires_at < timezone.now():
+            release_order_inventory(order, reason="reservation_expired_retry")
+            return Response({"detail": "Reservation expired. Restart checkout."}, status=status.HTTP_409_CONFLICT)
+        if order.payment_status not in {Order.PaymentStatus.FAILED, Order.PaymentStatus.CANCELLED}:
             return Response({"detail": "Retry is only available for failed payments."}, status=status.HTTP_400_BAD_REQUEST)
 
         retry_attempt = PaymentEvent.objects.filter(
@@ -202,7 +210,9 @@ class VerifyRazorpayPaymentView(APIView):
             )
             if not payment:
                 return Response({"detail": "Payment not found."}, status=status.HTTP_404_NOT_FOUND)
+            bind_context(order_id=payment.order_id, payment_id=payment.id, user_id=request.user.id)
             if payment.order.payment_status == Order.PaymentStatus.PAID:
+                finalize_cart_after_payment(payment.order.source_cart)
                 PaymentEvent.objects.create(
                     payment=payment,
                     event_type=PaymentEvent.EventType.REPLAY,
@@ -211,6 +221,7 @@ class VerifyRazorpayPaymentView(APIView):
                 return Response({"detail": "Payment already verified."}, status=status.HTTP_200_OK)
             duplicate = Payment.objects.filter(razorpay_payment_id=razorpay_payment_id).exclude(id=payment.id).exists()
             if duplicate:
+                metric_incr("payment.verify.failed")
                 PaymentEvent.objects.create(
                     payment=payment,
                     event_type=PaymentEvent.EventType.DUPLICATE,
@@ -224,6 +235,7 @@ class VerifyRazorpayPaymentView(APIView):
                 settings.RAZORPAY_KEY_SECRET,
             )
             if not hmac.compare_digest(expected_signature, razorpay_signature):
+                metric_incr("payment.verify.failed")
                 payment.status = Payment.Status.FAILED
                 payment.failure_reason = "Invalid signature"
                 payment.save(update_fields=["status", "failure_reason", "updated_at"])
@@ -233,13 +245,22 @@ class VerifyRazorpayPaymentView(APIView):
                     metadata={"reason": "invalid_signature"},
                 )
                 payment.order.payment_status = Order.PaymentStatus.FAILED
-                payment.order.status = Order.Status.PAYMENT_FAILED
+                payment.order.status = Order.Status.FAILED
                 payment.order.save(update_fields=["payment_status", "status", "updated_at"])
+                release_order_inventory(
+                    payment.order,
+                    reason="invalid_signature",
+                    payment_reference=razorpay_payment_id,
+                )
                 logger.warning("Payment signature verification failed for order_id=%s", payment.order_id)
+                sentry_sdk.capture_message("payment_signature_verification_failed", level="warning")
                 return Response({"detail": "Invalid payment signature."}, status=status.HTTP_400_BAD_REQUEST)
 
             payment.razorpay_payment_id = razorpay_payment_id
             payment.razorpay_signature = razorpay_signature
+            payment.order.payment_status = Order.PaymentStatus.PAYMENT_PROCESSING
+            payment.order.status = Order.Status.PAYMENT_PROCESSING
+            payment.order.save(update_fields=["payment_status", "status", "updated_at"])
             payment.status = Payment.Status.CAPTURED
             payment.verified_at = timezone.now()
             if (
@@ -258,17 +279,21 @@ class VerifyRazorpayPaymentView(APIView):
             )
             payment.order.payment_status = Order.PaymentStatus.PAID
             order_update_fields = ["payment_status", "updated_at"]
-            if payment.order.status != Order.Status.CONFIRMED:
-                payment.order.status = Order.Status.CONFIRMED
+            if payment.order.status != Order.Status.PAID:
+                payment.order.status = Order.Status.PAID
                 order_update_fields.append("status")
             payment.order.save(update_fields=order_update_fields)
             issue_referral_reward(payment.order)
+            finalize_cart_after_payment(payment.order.source_cart)
+            metric_incr("payment.verify.success")
+            metric_incr("checkout.converted")
+            log_event("payment_verified", order_id=payment.order_id, payment_id=payment.id)
             PaymentEvent.objects.create(
                 payment=payment,
                 event_type=PaymentEvent.EventType.PAYMENT_SUCCESS,
                 metadata={"razorpay_payment_id": razorpay_payment_id},
             )
-            send_order_email("payment_success", payment.order)
+            send_order_email_task.delay("payment_success", payment.order.id)
 
         return Response({"detail": "Payment verified successfully."}, status=status.HTTP_200_OK)
 
@@ -320,7 +345,7 @@ class RefundOrderView(APIView):
         order.payment_status = Order.PaymentStatus.REFUNDED
         order.status = Order.Status.REFUNDED
         order.save(update_fields=["payment_status", "status", "updated_at"])
-        send_order_email("refund_processed", order)
+        send_order_email_task.delay("refund_processed", order.id)
         return Response({"detail": "Order refunded successfully."}, status=status.HTTP_200_OK)
 
 
@@ -342,6 +367,7 @@ class RazorpayWebhookView(APIView):
             digestmod=hashlib.sha256,
         ).hexdigest()
         if not signature or not hmac.compare_digest(expected_signature, signature):
+            metric_incr("payment.webhook.failed")
             logger.warning("Invalid Razorpay webhook signature")
             return Response({"detail": "Invalid webhook signature."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -351,6 +377,7 @@ class RazorpayWebhookView(APIView):
             defaults={"event_type": request.data.get("event", "")},
         )
         if not created:
+            log_event("webhook_replay", event_id=event_id)
             return Response({"detail": "Webhook already processed."}, status=status.HTTP_200_OK)
 
         event_type = request.data.get("event")
@@ -364,11 +391,14 @@ class RazorpayWebhookView(APIView):
             if not payment:
                 logger.error("No payment found for webhook event_id=%s", event_id)
                 return Response({"detail": "Webhook accepted."}, status=status.HTTP_200_OK)
+            bind_context(order_id=payment.order_id, payment_id=payment.id)
 
             payment.razorpay_payment_id = entity.get("id") or payment.razorpay_payment_id
             payment.raw_response = request.data
             allowed_order_status_transitions = {
                 Order.PaymentStatus.PENDING: {Order.PaymentStatus.PAID, Order.PaymentStatus.FAILED},
+                Order.PaymentStatus.PENDING_PAYMENT: {Order.PaymentStatus.PAID, Order.PaymentStatus.FAILED},
+                Order.PaymentStatus.PAYMENT_PROCESSING: {Order.PaymentStatus.PAID, Order.PaymentStatus.FAILED},
                 Order.PaymentStatus.PAID: set(),
                 Order.PaymentStatus.FAILED: set(),
             }
@@ -377,30 +407,43 @@ class RazorpayWebhookView(APIView):
                 next_status = Order.PaymentStatus.PAID
                 if next_status in allowed_order_status_transitions.get(current_status, set()):
                     should_send_payment_email = payment.order.payment_status != next_status
+                    payment.order.payment_status = Order.PaymentStatus.PAYMENT_PROCESSING
+                    payment.order.status = Order.Status.PAYMENT_PROCESSING
+                    payment.order.save(update_fields=["payment_status", "status", "updated_at"])
                     deduct_order_stock(payment.order)
                     payment.status = Payment.Status.CAPTURED
                     payment.verified_at = timezone.now()
                     payment.order.payment_status = next_status
                     order_update_fields = ["payment_status", "updated_at"]
-                    if payment.order.status != Order.Status.CONFIRMED:
-                        payment.order.status = Order.Status.CONFIRMED
+                    if payment.order.status != Order.Status.PAID:
+                        payment.order.status = Order.Status.PAID
                         order_update_fields.append("status")
                     payment.order.save(update_fields=order_update_fields)
                     issue_referral_reward(payment.order)
+                    metric_incr("checkout.converted")
                     PaymentEvent.objects.create(
                         payment=payment,
                         event_type=PaymentEvent.EventType.PAYMENT_SUCCESS,
                         metadata={"source": "webhook", "razorpay_payment_id": payment.razorpay_payment_id},
                     )
                     if should_send_payment_email:
-                        send_order_email("payment_success", payment.order)
+                        send_order_email_task.delay("payment_success", payment.order.id)
                 else:
+                    metric_incr("payment.webhook.failed")
+                    PaymentWebhookRetry.objects.create(
+                        payment=payment,
+                        event_id=event_id,
+                        event_type=event_type or "",
+                        payload=request.data,
+                        next_retry_at=timezone.now() + timedelta(minutes=2),
+                    )
                     logger.warning(
                         "Ignoring webhook transition %s -> %s for order_id=%s",
                         current_status,
                         next_status,
                         payment.order_id,
                     )
+                finalize_cart_after_payment(payment.order.source_cart)
             elif event_type == "payment.failed":
                 current_status = payment.order.payment_status
                 next_status = Order.PaymentStatus.FAILED
@@ -408,15 +451,29 @@ class RazorpayWebhookView(APIView):
                     payment.status = Payment.Status.FAILED
                     payment.failure_reason = entity.get("error_description", "")
                     payment.order.payment_status = next_status
-                    payment.order.status = Order.Status.PAYMENT_FAILED
+                    payment.order.status = Order.Status.FAILED
                     payment.order.save(update_fields=["payment_status", "status", "updated_at"])
+                    release_order_inventory(
+                        payment.order,
+                        reason="payment_failed_webhook",
+                        payment_reference=payment.razorpay_payment_id or "",
+                    )
                     PaymentEvent.objects.create(
                         payment=payment,
                         event_type=PaymentEvent.EventType.PAYMENT_FAILED,
                         metadata={"source": "webhook", "reason": payment.failure_reason or "payment_failed"},
                     )
                     logger.error("Payment failed via webhook for order_id=%s", payment.order_id)
+                    sentry_sdk.capture_message("payment_failed_webhook", level="warning")
                 else:
+                    metric_incr("payment.webhook.failed")
+                    PaymentWebhookRetry.objects.create(
+                        payment=payment,
+                        event_id=event_id,
+                        event_type=event_type or "",
+                        payload=request.data,
+                        next_retry_at=timezone.now() + timedelta(minutes=2),
+                    )
                     logger.warning(
                         "Ignoring webhook transition %s -> %s for order_id=%s",
                         current_status,

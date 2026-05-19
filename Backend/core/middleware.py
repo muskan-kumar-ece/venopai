@@ -16,9 +16,11 @@ ID in formatted log lines (requires ``RequestIDFilter`` to be wired into
 """
 
 import logging
+import time
 import uuid
 
-from .log_filters import set_request_id
+from .log_filters import clear_context, set_context, set_request_id
+from .observability import metric_incr, metric_observe_ms
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +35,31 @@ class RequestIDMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
+        start = time.monotonic()
         request_id = request.META.get(REQUEST_ID_META_KEY) or str(uuid.uuid4())
         request.request_id = request_id
 
         # Propagate to thread-local so logging filter can read it.
         set_request_id(request_id)
+        set_context(
+            path=request.path,
+            method=request.method,
+            user_id=getattr(getattr(request, "user", None), "id", None),
+        )
 
-        response = self.get_response(request)
-        response[REQUEST_ID_HEADER] = request_id
-        return response
+        try:
+            response = self.get_response(request)
+            return response
+        finally:
+            elapsed_ms = round((time.monotonic() - start) * 1000, 2)
+            metric_observe_ms("api.latency", elapsed_ms)
+            status_code = getattr(locals().get("response"), "status_code", 500)
+            if status_code == 429:
+                metric_incr("rate_limit.hit")
+            logger.info(
+                "request_completed",
+                extra={"status_code": status_code, "latency_ms": elapsed_ms},
+            )
+            if "response" in locals():
+                response[REQUEST_ID_HEADER] = request_id
+            clear_context()

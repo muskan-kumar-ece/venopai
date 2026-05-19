@@ -3,12 +3,15 @@ from pathlib import Path
 
 from decouple import Csv, config
 from django.core.management.utils import get_random_secret_key
+import sentry_sdk
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
+DJANGO_ENV = config("DJANGO_ENV", default="dev")
 SECRET_KEY = config("SECRET_KEY", default=get_random_secret_key())
 DEBUG = config("DEBUG", default=False, cast=bool)
 ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="localhost,127.0.0.1", cast=Csv())
+ADMIN_URL_PATH = config("ADMIN_URL_PATH", default="admin/")
 
 DJANGO_APPS = [
     "django.contrib.admin",
@@ -46,7 +49,9 @@ INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "django.middleware.gzip.GZipMiddleware",
     "core.middleware.RequestIDMiddleware",
+    "core.security_middleware.SecurityHeadersMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -118,6 +123,7 @@ else:
 # Default cache TTLs (seconds) — can be overridden per view.
 CACHE_TTL_PRODUCT_LIST = config("CACHE_TTL_PRODUCT_LIST", default=300, cast=int)   # 5 min
 CACHE_TTL_ANALYTICS = config("CACHE_TTL_ANALYTICS", default=600, cast=int)         # 10 min
+CACHE_TTL_HEALTH = config("CACHE_TTL_HEALTH", default=10, cast=int)
 
 REDIS_URL = config("REDIS_URL", default="")
 if not REDIS_URL:
@@ -127,6 +133,10 @@ CELERY_BROKER_URL = config("CELERY_BROKER_URL", default=REDIS_URL)
 CELERY_RESULT_BACKEND = config("CELERY_RESULT_BACKEND", default=CELERY_BROKER_URL)
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = config("CELERY_TASK_TIME_LIMIT", default=300, cast=int)
+CELERY_TASK_SOFT_TIME_LIMIT = config("CELERY_TASK_SOFT_TIME_LIMIT", default=240, cast=int)
+CELERY_RESULT_EXPIRES = config("CELERY_RESULT_EXPIRES", default=3600, cast=int)
 
 if config("DB_NAME", default=""):
     DATABASES = {
@@ -164,6 +174,53 @@ STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "media/"
 MEDIA_ROOT = BASE_DIR / "media"
+MEDIA_STORAGE_BACKEND = config("MEDIA_STORAGE_BACKEND", default="local")
+
+CLOUDINARY_CLOUD_NAME = config("CLOUDINARY_CLOUD_NAME", default="")
+CLOUDINARY_API_KEY = config("CLOUDINARY_API_KEY", default="")
+CLOUDINARY_API_SECRET = config("CLOUDINARY_API_SECRET", default="")
+CLOUDINARY_SECURE = config("CLOUDINARY_SECURE", default=True, cast=bool)
+CLOUDINARY_PRODUCT_FOLDER = config("CLOUDINARY_PRODUCT_FOLDER", default="venopai/products")
+CLOUDINARY_DELIVERY_HOST = (
+    f"res.cloudinary.com/{CLOUDINARY_CLOUD_NAME}"
+    if CLOUDINARY_CLOUD_NAME
+    else ""
+)
+
+PRODUCT_IMAGE_MAX_UPLOAD_MB = config("PRODUCT_IMAGE_MAX_UPLOAD_MB", default=8, cast=int)
+PRODUCT_IMAGE_ALLOWED_CONTENT_TYPES = config(
+    "PRODUCT_IMAGE_ALLOWED_CONTENT_TYPES",
+    default="image/jpeg,image/png,image/webp",
+    cast=Csv(),
+)
+PRODUCT_IMAGE_ALLOWED_HOSTS = config(
+    "PRODUCT_IMAGE_ALLOWED_HOSTS",
+    default="",
+    cast=Csv(),
+)
+
+if MEDIA_STORAGE_BACKEND == "cloudinary":
+    STORAGES = {
+        "default": {
+            "BACKEND": "core.media_storage.CloudinaryMediaStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+
+if CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET:
+    try:
+        import cloudinary
+
+        cloudinary.config(
+            cloud_name=CLOUDINARY_CLOUD_NAME,
+            api_key=CLOUDINARY_API_KEY,
+            api_secret=CLOUDINARY_API_SECRET,
+            secure=CLOUDINARY_SECURE,
+        )
+    except ImportError:
+        pass
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "users.User"
@@ -175,6 +232,8 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
     ),
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "EXCEPTION_HANDLER": "core.exceptions.api_exception_handler",
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle",
         "rest_framework.throttling.UserRateThrottle",
@@ -217,6 +276,20 @@ CSRF_TRUSTED_ORIGINS = config(
 )
 FRONTEND_APP_URL = config("FRONTEND_APP_URL", default="http://localhost:3000")
 
+SESSION_COOKIE_SECURE = config("SESSION_COOKIE_SECURE", default=DJANGO_ENV != "dev", cast=bool)
+CSRF_COOKIE_SECURE = config("CSRF_COOKIE_SECURE", default=DJANGO_ENV != "dev", cast=bool)
+SECURE_SSL_REDIRECT = config("SECURE_SSL_REDIRECT", default=DJANGO_ENV == "prod", cast=bool)
+SESSION_COOKIE_HTTPONLY = True
+CSRF_COOKIE_HTTPONLY = config("CSRF_COOKIE_HTTPONLY", default=False, cast=bool)
+SECURE_REFERRER_POLICY = "strict-origin-when-cross-origin"
+SECURE_CROSS_ORIGIN_OPENER_POLICY = "same-origin"
+CSRF_COOKIE_SAMESITE = config("CSRF_COOKIE_SAMESITE", default="Lax")
+SESSION_COOKIE_SAMESITE = config("SESSION_COOKIE_SAMESITE", default="Lax")
+CONTENT_SECURITY_POLICY = config(
+    "CONTENT_SECURITY_POLICY",
+    default="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https:; connect-src 'self' https:; frame-src https://api.razorpay.com https://checkout.razorpay.com;",
+)
+
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = config("EMAIL_HOST", default="localhost")
 EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
@@ -237,7 +310,11 @@ LOG_LEVEL = config("LOG_LEVEL", default="INFO")
 # Set LOG_FORMAT=json in production to emit machine-parseable JSON log lines
 # (e.g. for ingestion by CloudWatch, Datadog, Loki).
 # Any other value (including the default "text") uses a human-readable format.
-LOG_FORMAT = config("LOG_FORMAT", default="text")
+LOG_FORMAT = config("LOG_FORMAT", default="json" if DJANGO_ENV == "prod" else "text")
+SENTRY_DSN = config("SENTRY_DSN", default="")
+SENTRY_TRACES_SAMPLE_RATE = config("SENTRY_TRACES_SAMPLE_RATE", default=0.0, cast=float)
+SENTRY_PROFILES_SAMPLE_RATE = config("SENTRY_PROFILES_SAMPLE_RATE", default=0.0, cast=float)
+STARTUP_STRICT_VALIDATION = config("STARTUP_STRICT_VALIDATION", default=False, cast=bool)
 
 LOGGING = {
     "version": 1,
@@ -270,6 +347,15 @@ LOGGING = {
     },
     "root": {"handlers": ["console"], "level": LOG_LEVEL},
 }
+
+if SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        environment=DJANGO_ENV,
+        traces_sample_rate=SENTRY_TRACES_SAMPLE_RATE,
+        profiles_sample_rate=SENTRY_PROFILES_SAMPLE_RATE,
+        send_default_pii=False,
+    )
 
 # ---------------------------------------------------------------------------
 # drf-spectacular – auto-generated OpenAPI schema

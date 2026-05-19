@@ -11,7 +11,9 @@ from rest_framework.test import APIClient
 from rest_framework.throttling import SimpleRateThrottle
 
 from orders.admin import OrderAdmin, mark_orders_confirmed
-from orders.models import Order
+from orders.inventory import reserve_order_inventory
+from orders.models import InventoryReservation, Order, OrderItem
+from payments.models import Payment
 from products.models import Category, Inventory, Product
 from users.models import Referral
 
@@ -177,3 +179,93 @@ class AnalyticsSummaryAPITests(TestCase):
         finally:
             SimpleRateThrottle.THROTTLE_RATES = original_rates
             cache.clear()
+
+
+class AdminOperationsVisibilityTests(TestCase):
+    def setUp(self):
+        self.admin_user = get_user_model().objects.create_superuser(
+            email="ops-admin@example.com",
+            password="SecurePass123!",
+            name="Ops Admin",
+        )
+        self.regular_user = get_user_model().objects.create_user(
+            email="ops-user@example.com",
+            password="SecurePass123!",
+            name="Ops User",
+        )
+        self.client = APIClient()
+        self.category = Category.objects.create(name="Ops Category")
+        self.product = Product.objects.create(
+            category=self.category,
+            name="Ops Product",
+            description="Ops",
+            price=Decimal("1500.00"),
+            sku="OPS-001",
+            stock_quantity=4,
+        )
+        self.order = Order.objects.create(
+            user=self.regular_user,
+            total_amount=Decimal("1500.00"),
+        )
+        OrderItem.objects.create(order=self.order, product=self.product, quantity=1, price=self.product.price)
+        reserve_order_inventory(self.order)
+        Payment.objects.create(
+            order=self.order,
+            idempotency_key="idem-failed",
+            razorpay_order_id="order_failed_1",
+            amount=150000,
+            status=Payment.Status.FAILED,
+            failure_reason="gateway_timeout",
+        )
+
+    def test_admin_can_view_operations_summary(self):
+        self.client.force_authenticate(self.admin_user)
+        response = self.client.get("/api/v1/admin/operations/summary/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["active_reservations"], 1)
+        self.assertEqual(response.data["failed_payments"], 1)
+
+    def test_admin_can_list_inventory_overview(self):
+        self.client.force_authenticate(self.admin_user)
+        response = self.client.get("/api/v1/admin/inventory/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        item = response.data["results"][0]
+        self.assertEqual(item["product_id"], self.product.id)
+        self.assertEqual(item["active_reserved"], 1)
+        self.assertEqual(item["available_quantity"], 3)
+
+    def test_admin_can_list_reservations(self):
+        self.client.force_authenticate(self.admin_user)
+        response = self.client.get("/api/v1/admin/reservations/", {"status": "active"})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        reservation = response.data["results"][0]
+        self.assertEqual(reservation["order_id"], self.order.id)
+        self.assertEqual(reservation["product_id"], self.product.id)
+        self.assertEqual(reservation["status"], InventoryReservation.Status.ACTIVE)
+
+    def test_admin_can_list_failed_payments(self):
+        self.client.force_authenticate(self.admin_user)
+        response = self.client.get("/api/v1/admin/payments/failed/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        payment = response.data["results"][0]
+        self.assertEqual(payment["order_id"], self.order.id)
+        self.assertEqual(payment["status"], Payment.Status.FAILED)
+
+    def test_non_admin_cannot_access_operations_endpoints(self):
+        self.client.force_authenticate(self.regular_user)
+        endpoints = [
+            "/api/v1/admin/operations/summary/",
+            "/api/v1/admin/inventory/",
+            "/api/v1/admin/reservations/",
+            "/api/v1/admin/payments/failed/",
+        ]
+        for endpoint in endpoints:
+            response = self.client.get(endpoint)
+            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)

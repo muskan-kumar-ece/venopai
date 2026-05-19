@@ -27,7 +27,7 @@ def create_paymentevent_immutable_triggers(apps, schema_editor):
             CREATE OR REPLACE FUNCTION payments_paymentevent_immutable()
             RETURNS trigger AS $$
             BEGIN
-                RAISE EXCEPTION 'PaymentEvent is immutable and cannot be %', TG_OP;
+                RAISE EXCEPTION 'PaymentEvent is immutable and cannot be %%', TG_OP;
             END;
             $$ LANGUAGE plpgsql;
             """

@@ -13,8 +13,8 @@ on:
       - ".github/workflows/backend-ci.yml"
 
 jobs:
-  test:
-    name: Django Tests
+  backend-quality:
+    name: Backend Quality
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -39,13 +39,26 @@ jobs:
         working-directory: Backend
         run: pip install -r requirements.txt
 
+      - name: Install lint tooling
+        run: pip install ruff
+
+      - name: Lint
+        working-directory: Backend
+        run: ruff check .
+
+      - name: Compile check
+        working-directory: Backend
+        run: python -m compileall .
+
       - name: Run system checks
         working-directory: Backend
         run: python manage.py check
 
       - name: Check for missing migrations
         working-directory: Backend
-        run: python manage.py migrate --check
+        run: |
+          python manage.py makemigrations --check --dry-run
+          python manage.py migrate --check
 
       - name: Run migrations (SQLite)
         working-directory: Backend

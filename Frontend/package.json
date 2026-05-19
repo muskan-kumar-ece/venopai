@@ -6,9 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@sentry/nextjs": "^8.36.0",
     "@radix-ui/react-slot": "^1.1.0",
     "@tanstack/react-query": "^5.90.21",
     "axios": "^1.13.5",

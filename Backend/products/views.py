@@ -2,12 +2,12 @@ from difflib import SequenceMatcher
 import hashlib
 from urllib.parse import urlencode
 
-from django.core.cache import cache
-from django.db.models import Avg, Count, Q, Value
+from django.conf import settings
+from django.db.models import Avg, Count, Q, Value, Prefetch
 from django.db.models.functions import Coalesce
 from django_filters import rest_framework as filters
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework import mixins, permissions, viewsets
+from rest_framework import mixins, parsers, permissions, viewsets
 from rest_framework.generics import GenericAPIView
 from rest_framework.generics import ListAPIView
 from rest_framework.filters import OrderingFilter, SearchFilter
@@ -16,6 +16,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
 from core.throttles import ReviewRateThrottle
+from core.cache_utils import cache_get, cache_set
 
 from .models import Category, FlashSale, Inventory, Product, ProductImage, Review
 from .permissions import IsAdminOrReadOnly
@@ -79,6 +80,18 @@ class CategoryViewSet(viewsets.ModelViewSet):
     serializer_class = CategorySerializer
     permission_classes = [IsAdminOrReadOnly]
 
+    def list(self, request, *args, **kwargs):
+        cache_key = "category_list:active"
+        cached = cache_get(cache_key)
+        if cached is not None:
+            return Response(cached)
+        queryset = self.filter_queryset(self.get_queryset())
+        if not request.user.is_authenticated or not request.user.is_staff:
+            queryset = queryset.filter(is_active=True)
+        serializer = self.get_serializer(queryset, many=True)
+        cache_set(cache_key, serializer.data, timeout=600)
+        return Response(serializer.data)
+
 
 class ProductViewSet(viewsets.ModelViewSet):
     serializer_class = ProductSerializer
@@ -118,7 +131,7 @@ class ProductViewSet(viewsets.ModelViewSet):
 
         cache_key = self._product_list_cache_key(request)
         try:
-            cached = cache.get(cache_key)
+            cached = cache_get(cache_key)
             if cached is not None:
                 return Response(cached)
         except Exception:
@@ -134,7 +147,7 @@ class ProductViewSet(viewsets.ModelViewSet):
             response = Response(serializer.data)
 
         try:
-            cache.set(cache_key, response.data, timeout=300)
+            cache_set(cache_key, response.data, timeout=settings.CACHE_TTL_PRODUCT_LIST)
         except Exception:
             pass
         return response
@@ -145,7 +158,7 @@ class ProductViewSet(viewsets.ModelViewSet):
 
         cache_key = f"product_detail:{kwargs.get('pk')}"
         try:
-            cached = cache.get(cache_key)
+            cached = cache_get(cache_key)
             if cached is not None:
                 return Response(cached)
         except Exception:
@@ -153,7 +166,7 @@ class ProductViewSet(viewsets.ModelViewSet):
 
         response = super().retrieve(request, *args, **kwargs)
         try:
-            cache.set(cache_key, response.data, timeout=600)
+            cache_set(cache_key, response.data, timeout=settings.CACHE_TTL_PRODUCT_LIST * 2)
         except Exception:
             pass
         return response
@@ -163,6 +176,7 @@ class ProductImageViewSet(viewsets.ModelViewSet):
     queryset = ProductImage.objects.select_related("product")
     serializer_class = ProductImageSerializer
     permission_classes = [IsAdminOrReadOnly]
+    parser_classes = [parsers.JSONParser, parsers.MultiPartParser, parsers.FormParser]
 
 
 class InventoryViewSet(viewsets.ModelViewSet):
@@ -316,3 +330,29 @@ class ProductSearchSuggestionsView(GenericAPIView):
         top_products = [item[1] for item in scored[: self.MAX_SUGGESTIONS]]
         serializer = self.get_serializer(top_products, many=True)
         return Response(serializer.data)
+
+
+class HomeCatalogView(GenericAPIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        cache_key = "homepage:catalog:v1"
+        cached = cache_get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
+        featured_products = list(
+            Product.objects.filter(is_active=True)
+            .select_related("category")
+            .prefetch_related(Prefetch("images"))
+            .order_by("-created_at")[:8]
+        )
+        featured_payload = ProductListSerializer(featured_products, many=True).data
+        categories = list(Category.objects.filter(is_active=True).order_by("name")[:12])
+        category_payload = CategorySerializer(categories, many=True).data
+        payload = {
+            "featured_products": featured_payload,
+            "categories": category_payload,
+        }
+        cache_set(cache_key, payload, timeout=300)
+        return Response(payload)

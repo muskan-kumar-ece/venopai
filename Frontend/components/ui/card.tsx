@@ -1,41 +1,76 @@
+/**
+ * Card Component
+ * 
+ * A versatile card component with multiple variants for different content types.
+ * Follows the VenoPai design system principles for ecommerce UX.
+ */
+
 import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
-
 import { cn } from "@/lib/utils";
 
 const cardVariants = cva(
-  "rounded-lg transition-all duration-200 ease-out motion-safe:hover:translate-y-[-2px]",
+  "rounded-lg transition-[border-color,background-color,box-shadow,transform] motion-standard motion-safe:hover:-translate-y-0.5",
   {
     variants: {
       variant: {
-        default:
-          "border border-neutral-200 bg-white shadow-sm hover:shadow-md dark:border-neutral-700 dark:bg-neutral-900",
-        bordered:
-          "border-2 border-neutral-300 bg-white hover:border-neutral-400 dark:border-neutral-600 dark:bg-neutral-900 dark:hover:border-neutral-500",
-        elevated:
-          "border border-neutral-200 bg-white shadow-md hover:shadow-lg dark:border-neutral-700 dark:bg-neutral-900",
-        subtle:
-          "border border-transparent bg-neutral-50 hover:bg-neutral-100 dark:bg-neutral-800 dark:hover:bg-neutral-700",
+        product: [
+          "border border-surface-200 bg-surface-50 shadow-sm hover:shadow-md",
+          "dark:border-surface-700 dark:bg-surface-900",
+        ],
+        category: [
+          "border border-surface-200 bg-surface-100 shadow-sm hover:shadow-md",
+          "dark:border-surface-700 dark:bg-surface-800",
+        ],
+        feature: [
+          "border border-surface-200 bg-surface-100 shadow-sm hover:shadow-md",
+          "dark:border-surface-700 dark:bg-surface-800",
+        ],
+        elevated: [
+          "border border-surface-200 bg-surface-50 shadow-md hover:shadow-lg",
+          "dark:border-surface-700 dark:bg-surface-900",
+        ],
+        flat: [
+          "border border-transparent bg-surface-50 hover:bg-surface-100",
+          "dark:bg-surface-800 dark:hover:bg-surface-700",
+        ],
+        interactive: [
+          "border border-surface-200 bg-surface-50 shadow-sm hover:shadow-md cursor-pointer",
+          "dark:border-surface-700 dark:bg-surface-900",
+        ],
+      },
+      size: {
+        sm: "p-3",
+        md: "p-4",
+        lg: "p-6",
       },
     },
     defaultVariants: {
-      variant: "default",
+      variant: "product",
+      size: "md",
     },
-  },
+  }
 );
 
 export interface CardProps
   extends React.HTMLAttributes<HTMLDivElement>,
-    VariantProps<typeof cardVariants> {}
+    VariantProps<typeof cardVariants> {
+  header?: React.ReactNode;
+  footer?: React.ReactNode;
+}
 
 const Card = React.forwardRef<HTMLDivElement, CardProps>(
-  ({ className, variant, ...props }, ref) => (
+  ({ className, variant, size, header, footer, ...props }, ref) => (
     <div
       ref={ref}
-      className={cn(cardVariants({ variant, className }))}
+      className={cn(cardVariants({ variant, size, className }))}
       {...props}
-    />
-  ),
+    >
+      {header && <div className="flex items-center justify-between">{header}</div>}
+      <div className="mt-2">{props.children}</div>
+      {footer && <div className="mt-3 flex items-center justify-between">{footer}</div>}
+    </div>
+  )
 );
 Card.displayName = "Card";
 
@@ -45,7 +80,7 @@ const CardHeader = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn("flex flex-col space-y-1.5 p-6", className)}
+    className={cn("flex flex-col space-y-1.5 p-0", className)}
     {...props}
   />
 ));
@@ -58,8 +93,8 @@ const CardTitle = React.forwardRef<
   <h3
     ref={ref}
     className={cn(
-      "text-xl font-semibold tracking-tight text-neutral-900 dark:text-neutral-50",
-      className,
+      "text-lg font-semibold tracking-tight text-surface-900 dark:text-surface-50",
+      className
     )}
     {...props}
   />
@@ -72,7 +107,7 @@ const CardDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <p
     ref={ref}
-    className={cn("text-sm text-neutral-500 dark:text-neutral-400", className)}
+    className={cn("text-sm text-surface-500 dark:text-surface-400", className)}
     {...props}
   />
 ));
@@ -82,8 +117,24 @@ const CardContent = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
 >(({ className, ...props }, ref) => (
-  <div ref={ref} className={cn("p-6 pt-0", className)} {...props} />
+  <div ref={ref} className={cn("p-0", className)} {...props} />
 ));
 CardContent.displayName = "CardContent";
 
-export { Card, CardHeader, CardTitle, CardDescription, CardContent, cardVariants };
+const CardFooter = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div ref={ref} className={cn("flex items-center justify-between p-0", className)} {...props} />
+));
+CardFooter.displayName = "CardFooter";
+
+export { 
+  Card, 
+  CardHeader, 
+  CardTitle, 
+  CardDescription, 
+  CardContent, 
+  CardFooter, 
+  cardVariants 
+};

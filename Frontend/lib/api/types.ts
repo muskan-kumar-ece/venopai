@@ -3,6 +3,11 @@ export type JwtPair = {
   refresh: string;
 };
 
+export type JwtRefreshResponse = {
+  access: string;
+  refresh?: string;
+};
+
 export type Product = {
   id: number;
   category: number;
@@ -18,8 +23,27 @@ export type Product = {
   is_active: boolean;
   average_rating?: number;
   reviews_count?: number;
+  image_url?: string | null;
+  image_url_card?: string | null;
+  image_url_detail?: string | null;
+  images?: ProductImage[];
   created_at: string;
   updated_at: string;
+};
+
+export type ProductImage = {
+  id: number;
+  product: number;
+  image_url: string;
+  image_url_thumbnail?: string;
+  image_url_card?: string;
+  image_url_detail?: string;
+  alt_text?: string;
+  is_primary: boolean;
+  sort_order: number;
+  width?: number | null;
+  height?: number | null;
+  format?: string;
 };
 
 export type Category = {
@@ -58,6 +82,7 @@ export type WishlistItem = {
   updated_at?: string;
 };
 
+/** @deprecated Legacy cart line shape — use ServerCartItem for server-backed cart APIs. */
 export type CartItem = {
   id: number;
   cart: number;
@@ -67,12 +92,61 @@ export type CartItem = {
   updated_at: string;
 };
 
+/** @deprecated Legacy cart header — use ServerCart for server-backed cart APIs. */
 export type Cart = {
   id: number;
   user: string;
   is_active: boolean;
   created_at: string;
   updated_at: string;
+};
+
+/** Nested product payload returned on cart line items (`GET /orders/carts/active/`). */
+export type CartProductSummary = {
+  id: number;
+  name: string;
+  slug: string;
+  sku: string;
+  price: string;
+  stock_quantity: number;
+  is_active: boolean;
+  is_refurbished: boolean;
+  condition_grade: string;
+  category_name: string;
+  image_url: string | null;
+  image_url_card?: string | null;
+};
+
+/** Server-backed cart line with nested product (quantity-based, one row per product). */
+export type ServerCartItem = {
+  id: number;
+  cart: number;
+  product: CartProductSummary;
+  quantity: number;
+  line_total: string;
+  created_at: string;
+  updated_at: string;
+};
+
+/** Server-backed cart header. */
+export type ServerCart = {
+  id: number;
+  user: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+/** React Query–friendly active cart payload from `GET /api/v1/orders/carts/active/`. */
+export type ServerCartView = {
+  id: number;
+  user: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  items: ServerCartItem[];
+  item_count: number;
+  subtotal: string;
 };
 
 export type Order = {
@@ -85,6 +159,8 @@ export type Order = {
   status: string;
   payment_status: string;
   tracking_id: string | null;
+  reservation_expires_at?: string | null;
+  reservation_released_at?: string | null;
   shipping_provider?: string | null;
   shipped_at?: string | null;
   delivered_at?: string | null;
@@ -109,6 +185,21 @@ export type OrderItem = {
   price: string;
   created_at: string;
   updated_at: string;
+};
+
+export type RazorpayPaymentSession = {
+  payment_id: number;
+  razorpay_order_id: string;
+  amount: number;
+  currency: string;
+  key_id: string;
+  retry_attempt?: number;
+};
+
+export type CheckoutFromCartResponse = {
+  order: Order;
+  payment: RazorpayPaymentSession;
+  reservation_expires_at?: string | null;
 };
 
 export type AnalyticsSummary = {

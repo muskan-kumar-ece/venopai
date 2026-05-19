@@ -1,0 +1,172 @@
+/**
+ * Design System Tokens
+ * 
+ * This file contains CSS custom properties for the VenoPai design system.
+ * These tokens provide a centralized way to manage colors, typography,
+ * spacing, and other design values throughout the application.
+ */
+
+:root {
+  /* Color tokens */
+  --color-primary-50: #EEF2FF;
+  --color-primary-100: #E0E7FF;
+  --color-primary-200: #C7D2FE;
+  --color-primary-300: #A5B4FC;
+  --color-primary-400: #818CF8;
+  --color-primary-500: #6366F1;
+  --color-primary-600: #4F46E5;
+  --color-primary-700: #4338CA;
+  --color-primary-800: #3730A3;
+  --color-primary-900: #312E81;
+
+  --color-secondary-50: #F5F3FF;
+  --color-secondary-100: #EDE9FE;
+  --color-secondary-200: #D8D6F7;
+  --color-secondary-300: #BDB6F2;
+  --color-secondary-400: #A78BFF;
+  --color-secondary-500: #8B5CF6;
+  --color-secondary-600: #7C3AED;
+  --color-secondary-700: #6D28D9;
+  --color-secondary-800: #5B21B6;
+  --color-secondary-900: #4F1BB3;
+
+  --color-success-50: #ECFDF5;
+  --color-success-100: #D1FAE5;
+  --color-success-200: #A7F3D0;
+  --color-success-300: #6EE7B7;
+  --color-success-400: #34D399;
+  --color-success-500: #10B981;
+  --color-success-600: #059669;
+  --color-success-700: #047857;
+  --color-success-800: #065F46;
+  --color-success-900: #052E16;
+
+  --color-warning-50: #FFFBEF;
+  --color-warning-100: #FEF3C7;
+  --color-warning-200: #FDE68A;
+  --color-warning-300: #FCD34D;
+  --color-warning-400: #FBBF24;
+  --color-warning-500: #F59E0B;
+  --color-warning-600: #D97706;
+  --color-warning-700: #B45309;
+  --color-warning-800: #92400E;
+  --color-warning-900: #78350F;
+
+  --color-error-50: #FEE2E2;
+  --color-error-100: #FECACA;
+  --color-error-200: #FCA5A5;
+  --color-error-300: #F87171;
+  --color-error-400: #EF4444;
+  --color-error-500: #DC2626;
+  --color-error-600: #B91C1C;
+  --color-error-700: #B91C1C;
+  --color-error-800: #7F1D1D;
+  --color-error-900: #450A0A;
+
+  --color-info-50: #F0F9FF;
+  --color-info-100: #E0F2FE;
+  --color-info-200: #BAE6FD;
+  --color-info-300: #7DD3FC;
+  --color-info-400: #60A5FA;
+  --color-info-500: #3B82F6;
+  --color-info-600: #2563EB;
+  --color-info-700: #1D4ED8;
+  --color-info-800: #1E40AF;
+  --color-info-900: #1E3A8A;
+
+  /* Surface layers */
+  --color-surface-50: #FFFFFF;
+  --color-surface-100: #F9FAFB;
+  --color-surface-200: #F3F4F6;
+  --color-surface-300: #E5E7EB;
+  --color-surface-400: #D1D5DB;
+  --color-surface-500: #9CA3AF;
+  --color-surface-600: #6B7280;
+  --color-surface-700: #4B5563;
+  --color-surface-800: #374151;
+  --color-surface-900: #1F2937;
+
+  /* Background layers */
+  --color-background-50: #F9FAFB;
+  --color-background-100: #F3F4F6;
+  --color-background-200: #E5E7EB;
+  --color-background-300: #D1D5DB;
+  --color-background-400: #9CA3AF;
+  --color-background-500: #6B7280;
+  --color-background-600: #4B5563;
+  --color-background-700: #374151;
+  --color-background-800: #1F2937;
+  --color-background-900: #111827;
+
+  /* Commerce specific */
+  --color-cta-primary: var(--color-primary-500);
+  --color-cta-secondary: var(--color-surface-50);
+  --color-cta-outline: var(--color-primary-500);
+  --color-cta-success: var(--color-success-500);
+  --color-cta-warning: var(--color-warning-500);
+  --color-cta-error: var(--color-error-500);
+  --color-cta-info: var(--color-info-500);
+
+  --color-trust-secure: var(--color-success-500);
+  --color-trust-verified: var(--color-warning-500);
+  --color-trust-popular: var(--color-info-500);
+  --color-trust-new: var(--color-error-500);
+
+  /* Typography */
+  --font-family-sans: "Inter", system-ui, sans-serif;
+  --font-family-mono: "JetBrains Mono", monospace;
+
+  /* Spacing scale */
+  --space-0: 0px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --space-5: 32px;
+  --space-6: 48px;
+  --space-7: 64px;
+  --space-8: 96px;
+  --space-9: 128px;
+  --space-10: 256px;
+
+  /* Border radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 24px;
+  --radius-round: 9999px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-base: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.05);
+  --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+
+  /* Z-index scale */
+  --z-index-hide: -1;
+  --z-index-auto: auto;
+  --z-index-0: 0;
+  --z-index-10: 10;
+  --z-index-20: 20;
+  --z-index-30: 30;
+  --z-index-40: 40;
+  --z-index-50: 50;
+  --z-index-60: 60;
+  --z-index-70: 70;
+  --z-index-80: 80;
+  --z-index-90: 90;
+  --z-index-100: 100;
+
+  /* Transition durations */
+  --transition-duration-short: 150ms;
+  --transition-duration-base: 250ms;
+  --transition-duration-long: 350ms;
+
+  /* Transition timing functions */
+  --transition-timing-standard: ease-in-out;
+  --transition-timing-in: ease-out;
+  --transition-timing-out: ease-in;
+}
